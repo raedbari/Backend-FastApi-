@@ -1,10 +1,15 @@
 # app/models.py
 # Data schemas exchanged between frontend and backend.
-# Pydantic v2 compatible (note: use 'pattern' instead of the removed 'regex').
+# Pydantic v2 compatible (use 'pattern' instead of the removed 'regex').
 
 from __future__ import annotations
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
+import os
+
+# ----- K8s naming pattern & defaults -----
+DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
 
 
 class EnvVar(BaseModel):
@@ -24,14 +29,14 @@ class AppSpec(BaseModel):
     - app_label: label value for selector 'app'; defaults to 'name'.
     - service_name: K8s Service name to manage/adopt; defaults to 'name'.
     - container_name: the container name inside the Deployment; defaults to 'name'.
-      (Set this to your actual container name, e.g., 'nodejs' in your Deployment.)
+    - namespace: target Kubernetes namespace (default from env or "default").
     - image + tag -> full_image as 'image:tag'.
     - port, health_path, readiness_path, metrics_path, replicas, env, resources.
     """
     # Resource names / selectors
     name: str = Field(
         ...,
-        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        pattern=DNS1123_LABEL,
         description="K8s resource name (lowercase, digits, hyphen)."
     )
     app_label: Optional[str] = Field(
@@ -42,6 +47,13 @@ class AppSpec(BaseModel):
     )
     container_name: Optional[str] = Field(
         None, description="Container name inside the Deployment; defaults to 'name'."
+    )
+
+    # Namespace (NEW)
+    namespace: str = Field(
+        default=DEFAULT_NS,
+        pattern=DNS1123_LABEL,
+        description="Target Kubernetes namespace; defaults from DEFAULT_NAMESPACE env or 'default'."
     )
 
     # Image & runtime
@@ -92,6 +104,7 @@ class ScaleRequest(BaseModel):
     """Scaling request for an already-deployed application."""
     name: str
     replicas: int = Field(..., ge=1, le=100)
+    namespace: str = Field(default=DEFAULT_NS, pattern=DNS1123_LABEL)  # NEW
 
 
 class StatusItem(BaseModel):
@@ -115,6 +128,8 @@ class KPIQuery(BaseModel):
     Simplified query for Prometheus KPIs (used later):
     - app: optional app filter.
     - window: PromQL range, e.g., 1m or 5m.
+    - namespace: optional NS filter (falls back to server-side default if omitted).
     """
     app: Optional[str] = None
     window: str = Field("1m", description="e.g., 1m or 5m")
+    namespace: Optional[str] = Field(default=None, pattern=DNS1123_LABEL)  # optional
