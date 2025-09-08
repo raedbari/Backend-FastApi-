@@ -3,9 +3,12 @@
 Kubernetes operations for our platform:
 - Build a V1Container from AppSpec.
 - Upsert (create or patch) a Deployment (adopt existing by name).
-- Upsert a Service (adopt existing by name) without breaking NodePort settings.
+- Upsert a Service (adopt existing by name) without breaking NodePort.
 - Scale a Deployment via the Scale subresource.
 - List status of managed Deployments.
+
+NOTE: For patch operations we pass typed Kubernetes objects (V1Deployment / V1Service)
+not raw dicts, so the serializer emits proper camelCase (containerPort, targetPort, …).
 """
 
 from __future__ import annotations
@@ -24,15 +27,11 @@ from .models import AppSpec, StatusItem, StatusResponse
 
 
 def _container_from_spec(spec: AppSpec) -> client.V1Container:
-    """
-    Convert AppSpec into a V1Container with ports, probes, resources, env, and security context.
-    Uses spec.effective_container_name so we don't break existing CI commands that reference
-    the container by name (e.g., 'nodejs').
-    """
+    """Convert AppSpec into a V1Container (ports, probes, resources, env, security)."""
     env_list = [client.V1EnvVar(name=e.name, value=e.value) for e in (spec.env or [])]
 
     liveness = client.V1Probe(
-        http_get=client.V1HTTPGetAction(path=spec.health_path, port=spec.port),
+        http_get=client.V1HTTPGetAction(path=spec.health_path or "/", port=spec.port),
         initial_delay_seconds=10,
         period_seconds=10,
         timeout_seconds=2,
@@ -40,7 +39,8 @@ def _container_from_spec(spec: AppSpec) -> client.V1Container:
     )
     readiness = client.V1Probe(
         http_get=client.V1HTTPGetAction(
-            path=spec.readiness_path or spec.health_path, port=spec.port
+            path=(spec.readiness_path or spec.health_path or "/"),
+            port=spec.port,
         ),
         initial_delay_seconds=5,
         period_seconds=5,
@@ -51,10 +51,10 @@ def _container_from_spec(spec: AppSpec) -> client.V1Container:
     resources = client.V1ResourceRequirements(**(spec.resources or {}))
 
     return client.V1Container(
-        name=spec.effective_container_name,   # <<< important
+        name=spec.effective_container_name,
         image=spec.full_image,
         image_pull_policy="Always",
-        ports=[client.V1ContainerPort(container_port=spec.port)],
+        ports=[client.V1ContainerPort(container_port=spec.port, name="http", protocol="TCP")],
         env=env_list,
         liveness_probe=liveness,
         readiness_probe=readiness,
@@ -69,10 +69,10 @@ def _container_from_spec(spec: AppSpec) -> client.V1Container:
 
 def upsert_deployment(spec: AppSpec) -> Dict:
     """
-    Create or patch a Deployment named <spec.name> in the working namespace.
-    Selector remains immutable for existing Deployments; we patch only replicas and template.
+    Create or patch a Deployment named <spec.name> in the resolved namespace.
+    If exists → patch labels/replicas/template using typed body (no snake_case dicts).
     """
-    ns = get_namespace()
+    ns = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
     app_label = spec.effective_app_label
@@ -83,33 +83,33 @@ def upsert_deployment(spec: AppSpec) -> Dict:
         spec=client.V1PodSpec(containers=[_container_from_spec(spec)]),
     )
 
-    body = client.V1Deployment(
+    create_body = client.V1Deployment(
         api_version="apps/v1",
         kind="Deployment",
-        metadata=client.V1ObjectMeta(name=spec.name, labels=labels),
+        metadata=client.V1ObjectMeta(name=spec.name, namespace=ns, labels=labels),
         spec=client.V1DeploymentSpec(
             replicas=spec.replicas,
             selector=client.V1LabelSelector(match_labels={"app": app_label}),
             template=pod_template,
+            strategy=client.V1DeploymentStrategy(type="RollingUpdate"),
         ),
     )
 
     try:
-        # Exists → patch only labels, replicas, and template
-        _ = apps.read_namespaced_deployment(name=spec.name, namespace=ns)
-        patch_body = {
-            "metadata": {"labels": labels},
-            "spec": {
-                "replicas": spec.replicas,
-                "template": pod_template.to_dict(),
-            },
-        }
+        apps.read_namespaced_deployment(name=spec.name, namespace=ns)
+        patch_body = client.V1Deployment(
+            metadata=client.V1ObjectMeta(labels=labels),
+            spec=client.V1DeploymentSpec(
+                replicas=spec.replicas,
+                template=pod_template,
+            ),
+        )
         resp = apps.patch_namespaced_deployment(
             name=spec.name, namespace=ns, body=patch_body
         )
     except ApiException as e:
         if getattr(e, "status", None) == 404:
-            resp = apps.create_namespaced_deployment(namespace=ns, body=body)
+            resp = apps.create_namespaced_deployment(namespace=ns, body=create_body)
         else:
             raise
 
@@ -119,56 +119,56 @@ def upsert_deployment(spec: AppSpec) -> Dict:
 def upsert_service(spec: AppSpec) -> Dict:
     """
     Create or patch a Service exposing the app.
-    Adoption rules:
-      - If Service exists, DO NOT change .spec.type or .spec.ports (to keep NodePort).
-        Only update metadata.labels and .spec.selector.
-      - If it does not exist, create a ClusterIP Service with the given port.
+    - If Service exists → patch only labels and selector (keep type/ports e.g. NodePort).
+    - If not exists → create ClusterIP with the given port.
     """
-    ns = get_namespace()
+    ns = spec.namespace or get_namespace()
     core = get_api_clients()["core"]
 
     app_label = spec.effective_app_label
     svc_name = spec.effective_service_name
     labels = platform_labels({"app": app_label})
 
-    desired_ports = [
-        client.V1ServicePort(name="http", port=spec.port, target_port=spec.port)
-    ]
-
     try:
-        _existing = core.read_namespaced_service(name=svc_name, namespace=ns)
-        patch_body = {
-            "metadata": {"labels": labels},
-            "spec": {"selector": {"app": app_label}},
-        }
-        resp = core.patch_namespaced_service(
-            name=svc_name, namespace=ns, body=patch_body
+        # موجودة: لا نلمس type/ports
+        core.read_namespaced_service(name=svc_name, namespace=ns)
+        patch_body = client.V1Service(
+            metadata=client.V1ObjectMeta(labels=labels),
+            spec=client.V1ServiceSpec(selector={"app": app_label}),
         )
+        resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
+
     except ApiException as e:
         if getattr(e, "status", None) == 404:
-            body = client.V1Service(
+            # غير موجودة: أنشئ ClusterIP مع المنفذ
+            create_body = client.V1Service(
                 api_version="v1",
                 kind="Service",
-                metadata=client.V1ObjectMeta(name=svc_name, labels=labels),
+                metadata=client.V1ObjectMeta(name=svc_name, namespace=ns, labels=labels),
                 spec=client.V1ServiceSpec(
                     type="ClusterIP",
                     selector={"app": app_label},
-                    ports=desired_ports,
+                    ports=[
+                        client.V1ServicePort(
+                            name="http",
+                            port=spec.port,
+                            target_port=spec.port,
+                            protocol="TCP",
+                        )
+                    ],
                 ),
             )
-            resp = core.create_namespaced_service(namespace=ns, body=body)
+            resp = core.create_namespaced_service(namespace=ns, body=create_body)
         else:
             raise
 
     return resp.to_dict()
 
 
-def list_status(name: Optional[str] = None) -> StatusResponse:
-    """
-    Return status for either a single Deployment (if `name` is provided)
-    or all Deployments labeled as managed-by our platform.
-    """
-    ns = get_namespace()
+
+def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> StatusResponse:
+    """Status for one/all managed Deployments in the resolved namespace."""
+    ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
     if name:
@@ -205,11 +205,9 @@ def list_status(name: Optional[str] = None) -> StatusResponse:
     return StatusResponse(items=items)
 
 
-def scale(name: str, replicas: int) -> Dict:
-    """
-    Patch the Scale subresource of a Deployment to set a new replica count.
-    """
-    ns = get_namespace()
+def scale(name: str, replicas: int, namespace: Optional[str] = None) -> Dict:
+    """Patch the Scale subresource of a Deployment in the resolved namespace."""
+    ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
     body = {"spec": {"replicas": replicas}}
     resp = apps.patch_namespaced_deployment_scale(name=name, namespace=ns, body=body)
