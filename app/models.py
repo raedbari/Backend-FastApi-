@@ -21,6 +21,27 @@ class EnvVar(BaseModel):
 
 
 class AppSpec(BaseModel):
+        # --- جديد: منفذ ومسار صحة «فعّالان» لفرض الاتساق ---
+    @property
+    def effective_port(self) -> int:
+        """
+        يُطبَّع المنفذ إلى قيمة آمنة مع تشغيل non-root.
+        - إن لم يُحدَّد port → 8080
+        - إن كان < 1024 → 8080
+        """
+        p = self.port or 8080
+        if p < 1024:
+            p = 8080
+        return p
+
+    @property
+    def effective_health_path(self) -> str:
+        """
+        المسار الصحي الافتراضي. '/' يعمل مع Nginx/Echo ومعظم الصور العامة.
+        إن كانت health_path None أو فارغة نُعيد '/'.
+        """
+        return (self.health_path or "/").strip() or "/"
+
     """
     Application contract for deployments/adoption.
 

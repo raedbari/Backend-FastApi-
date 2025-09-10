@@ -87,18 +87,18 @@ async def deploy_app(spec: AppSpec):
 async def scale_app(req: ScaleRequest):
     """Patch the Scale subresource of a Deployment."""
     try:
-        result = scale(req.name, req.replicas)
+        # كان: result = scale(req.name, req.replicas)
+        result = scale(req.name, req.replicas, namespace=req.namespace)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get("/apps/status", response_model=StatusResponse)
-async def apps_status(name: str | None = Query(default=None)):
-    """
-    - Without 'name': list all Deployments labeled managed-by=cloud-devops-platform.
-    - With 'name': return status for that specific Deployment.
-    """
+async def apps_status(
+    name: str | None = Query(default=None),
+    namespace: str | None = Query(default=None)
+):
     try:
-        return list_status(name)
+        return list_status(name=name, namespace=namespace)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

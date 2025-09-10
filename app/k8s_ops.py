@@ -28,119 +28,163 @@ from .models import AppSpec, StatusItem, StatusResponse
 
 def _container_from_spec(spec: AppSpec) -> client.V1Container:
     """Convert AppSpec into a V1Container (ports, probes, resources, env, security)."""
+    # استخدم القيم الفعّالة المطبَّعة
+    port = spec.effective_port
+    path = spec.effective_health_path
+
     env_list = [client.V1EnvVar(name=e.name, value=e.value) for e in (spec.env or [])]
 
-    liveness = client.V1Probe(
-        http_get=client.V1HTTPGetAction(path=spec.health_path or "/", port=spec.port),
-        initial_delay_seconds=10,
-        period_seconds=10,
-        timeout_seconds=2,
-        failure_threshold=3,
+    # موارد افتراضية متواضعة إذا لم يمرّر المستخدم شيئًا
+    default_resources = {
+        "requests": {"cpu": "50m", "memory": "64Mi"},
+        "limits":   {"cpu": "300m", "memory": "256Mi"},
+    }
+    res = spec.resources or default_resources
+    resources = client.V1ResourceRequirements(
+        requests=res.get("requests", default_resources["requests"]),
+        limits=res.get("limits", default_resources["limits"]),
     )
-    readiness = client.V1Probe(
-        http_get=client.V1HTTPGetAction(
-            path=(spec.readiness_path or spec.health_path or "/"),
-            port=spec.port,
-        ),
-        initial_delay_seconds=5,
-        period_seconds=5,
-        timeout_seconds=2,
-        failure_threshold=3,
-    )
-
-    resources = client.V1ResourceRequirements(**(spec.resources or {}))
 
     return client.V1Container(
         name=spec.effective_container_name,
         image=spec.full_image,
         image_pull_policy="Always",
-        ports=[client.V1ContainerPort(container_port=spec.port, name="http", protocol="TCP")],
+        ports=[client.V1ContainerPort(container_port=port, name="http", protocol="TCP")],
         env=env_list,
-        liveness_probe=liveness,
-        readiness_probe=readiness,
-        resources=resources,
+        # بروبس موحّدة على "/" والمنفذ الفعّال
+        readiness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3
+        ),
+        liveness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3
+        ),
+        startup_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            failure_threshold=30, period_seconds=2
+        ),
         security_context=client.V1SecurityContext(
             run_as_user=1001,
             run_as_non_root=True,
             allow_privilege_escalation=False,
         ),
+        resources=resources,
     )
 
 
-def upsert_deployment(spec: AppSpec) -> Dict:
-    """
-    Create or patch a Deployment named <spec.name> in the resolved namespace.
-    If exists → patch labels/replicas/template using typed body (no snake_case dicts).
-    """
-    ns = spec.namespace or get_namespace()
+
+from kubernetes import client
+
+def upsert_deployment(spec: AppSpec) -> dict:
+    ns   = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
-    app_label = spec.effective_app_label
-    labels = platform_labels({"app": app_label})
+   # container = _container_from_spec(spec)
+    name = spec.effective_app_label
+    port = spec.effective_port
+    path = spec.effective_health_path
+    labels = platform_labels({"app": name})
 
-    pod_template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels=labels),
-        spec=client.V1PodSpec(containers=[_container_from_spec(spec)]),
-    )
-
-    create_body = client.V1Deployment(
-        api_version="apps/v1",
-        kind="Deployment",
-        metadata=client.V1ObjectMeta(name=spec.name, namespace=ns, labels=labels),
-        spec=client.V1DeploymentSpec(
-            replicas=spec.replicas,
-            selector=client.V1LabelSelector(match_labels={"app": app_label}),
-            template=pod_template,
-            strategy=client.V1DeploymentStrategy(type="RollingUpdate"),
+    container = client.V1Container(
+        name=name,
+        image=f"{spec.image}:{spec.tag}" if spec.tag else spec.image,
+        ports=[client.V1ContainerPort(container_port=port, name="http")],
+        security_context=client.V1SecurityContext(run_as_non_root=True, allow_privilege_escalation=False),
+        resources=client.V1ResourceRequirements(
+            requests=(spec.resources or {}).get("requests", {"cpu": "50m",  "memory": "64Mi"}),
+            limits  =(spec.resources or {}).get("limits",   {"cpu": "300m", "memory": "256Mi"}),
+        ),
+        readiness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3
+        ),
+        liveness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3
+        ),
+        startup_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            failure_threshold=30, period_seconds=2
         ),
     )
 
+    pod_template = client.V1PodTemplateSpec(
+        metadata=client.V1ObjectMeta(labels=labels),
+        spec=client.V1PodSpec(containers=[container]),
+    )
+
+    dep_spec = client.V1DeploymentSpec(
+        replicas=spec.replicas or 1,
+        selector=client.V1LabelSelector(match_labels={"app": name}),
+        template=pod_template,
+        strategy=client.V1DeploymentStrategy(
+            type="RollingUpdate",
+            rolling_update=client.V1RollingUpdateDeployment(max_surge=1, max_unavailable=0),
+        ),
+    )
+
+    body = client.V1Deployment(
+        api_version="apps/v1",
+        kind="Deployment",
+        metadata=client.V1ObjectMeta(name=name, namespace=ns, labels=labels),
+        spec=dep_spec,
+    )
+
     try:
-        apps.read_namespaced_deployment(name=spec.name, namespace=ns)
-        patch_body = client.V1Deployment(
-            metadata=client.V1ObjectMeta(labels=labels),
-            spec=client.V1DeploymentSpec(
-                replicas=spec.replicas,
-                template=pod_template,
-            ),
-        )
-        resp = apps.patch_namespaced_deployment(
-            name=spec.name, namespace=ns, body=patch_body
-        )
-    except ApiException as e:
+        apps.read_namespaced_deployment(name=name, namespace=ns)
+        resp = apps.patch_namespaced_deployment(name=name, namespace=ns, body=body)
+    except client.exceptions.ApiException as e:
         if getattr(e, "status", None) == 404:
-            resp = apps.create_namespaced_deployment(namespace=ns, body=create_body)
+            resp = apps.create_namespaced_deployment(namespace=ns, body=body)
         else:
             raise
 
     return resp.to_dict()
 
-
-def upsert_service(spec: AppSpec) -> Dict:
+def upsert_service(spec: AppSpec) -> dict:
     """
-    Create or patch a Service exposing the app.
-    - If Service exists → patch only labels and selector (keep type/ports e.g. NodePort).
-    - If not exists → create ClusterIP with the given port.
+    Create or patch a Service named <spec.service_name> في الـnamespace المحسوم.
+    - إذا كانت الخدمة موجودة ونوعها NodePort، نُبقي nodePort/type كما هما.
+    - نضبط دائمًا targetPort ليطابق المنفذ الفعّال للحاوية (effective_port).
+    - إذا لم توجد، ننشئ ClusterIP افتراضيًا.
     """
-    ns = spec.namespace or get_namespace()
+    ns   = spec.namespace or get_namespace()
     core = get_api_clients()["core"]
 
     app_label = spec.effective_app_label
-    svc_name = spec.effective_service_name
-    labels = platform_labels({"app": app_label})
+    svc_name  = spec.effective_service_name
+    labels    = platform_labels({"app": app_label})
+    port      = spec.effective_port
 
     try:
-        # موجودة: لا نلمس type/ports
-        core.read_namespaced_service(name=svc_name, namespace=ns)
+        existing = core.read_namespaced_service(name=svc_name, namespace=ns)
+
+        svc_type     = existing.spec.type or "ClusterIP"
+        cluster_port = (existing.spec.ports[0].port if existing.spec.ports else port)
+        node_port    = None
+        if svc_type == "NodePort" and existing.spec.ports:
+            node_port = existing.spec.ports[0].node_port
+
         patch_body = client.V1Service(
+            api_version="v1",
             metadata=client.V1ObjectMeta(labels=labels),
-            spec=client.V1ServiceSpec(selector={"app": app_label}),
+            spec=client.V1ServiceSpec(
+                selector={"app": app_label},
+                type=svc_type,
+                ports=[client.V1ServicePort(
+                    name="http",
+                    port=cluster_port,      # نُبقي Port الخدمة كما كان
+                    target_port=port,       # نربطه بمنفذ الحاوية الفعّال
+                    protocol="TCP",
+                    node_port=node_port     # فقط إن كان NodePort
+                )]
+            )
         )
         resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
 
     except ApiException as e:
         if getattr(e, "status", None) == 404:
-            # غير موجودة: أنشئ ClusterIP مع المنفذ
             create_body = client.V1Service(
                 api_version="v1",
                 kind="Service",
@@ -148,15 +192,8 @@ def upsert_service(spec: AppSpec) -> Dict:
                 spec=client.V1ServiceSpec(
                     type="ClusterIP",
                     selector={"app": app_label},
-                    ports=[
-                        client.V1ServicePort(
-                            name="http",
-                            port=spec.port,
-                            target_port=spec.port,
-                            protocol="TCP",
-                        )
-                    ],
-                ),
+                    ports=[client.V1ServicePort(name="http", port=port, target_port=port, protocol="TCP")]
+                )
             )
             resp = core.create_namespaced_service(namespace=ns, body=create_body)
         else:
