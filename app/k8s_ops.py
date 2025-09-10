@@ -26,86 +26,99 @@ from .k8s_client import get_api_clients, get_namespace, platform_labels
 from .models import AppSpec, StatusItem, StatusResponse
 
 
-def _container_from_spec(spec: AppSpec) -> client.V1Container:
-    """Convert AppSpec into a V1Container (ports, probes, resources, env, security)."""
-    # استخدم القيم الفعّالة المطبَّعة
-    port = spec.effective_port
-    path = spec.effective_health_path
+# def _container_from_spec(spec: AppSpec) -> client.V1Container:
+#     """Convert AppSpec into a V1Container (ports, probes, resources, env, security)."""
+#     # استخدم القيم الفعّالة المطبَّعة
+#     port = spec.effective_port
+#     path = spec.effective_health_path
 
-    env_list = [client.V1EnvVar(name=e.name, value=e.value) for e in (spec.env or [])]
+#     env_list = [client.V1EnvVar(name=e.name, value=e.value) for e in (spec.env or [])]
 
-    # موارد افتراضية متواضعة إذا لم يمرّر المستخدم شيئًا
-    default_resources = {
-        "requests": {"cpu": "50m", "memory": "64Mi"},
-        "limits":   {"cpu": "300m", "memory": "256Mi"},
-    }
-    res = spec.resources or default_resources
-    resources = client.V1ResourceRequirements(
-        requests=res.get("requests", default_resources["requests"]),
-        limits=res.get("limits", default_resources["limits"]),
-    )
+#     # موارد افتراضية متواضعة إذا لم يمرّر المستخدم شيئًا
+#     default_resources = {
+#         "requests": {"cpu": "20m", "memory": "64Mi"},
+#         "limits":   {"cpu": "200m", "memory": "256Mi"},
+#     }
+#     res = spec.resources or default_resources
+#     resources = client.V1ResourceRequirements(
+#         requests=res.get("requests", default_resources["requests"]),
+#         limits=res.get("limits", default_resources["limits"]),
+#     )
 
-    return client.V1Container(
-        name=spec.effective_container_name,
-        image=spec.full_image,
-        image_pull_policy="Always",
-        ports=[client.V1ContainerPort(container_port=port, name="http", protocol="TCP")],
-        env=env_list,
-        # بروبس موحّدة على "/" والمنفذ الفعّال
-        readiness_probe=client.V1Probe(
-            http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3
-        ),
-        liveness_probe=client.V1Probe(
-            http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3
-        ),
-        startup_probe=client.V1Probe(
-            http_get=client.V1HTTPGetAction(path=path, port=port),
-            failure_threshold=30, period_seconds=2
-        ),
-        security_context=client.V1SecurityContext(
-            run_as_user=1001,
-            run_as_non_root=True,
-            allow_privilege_escalation=False,
-        ),
-        resources=resources,
-    )
+#     return client.V1Container(
+#         name=spec.effective_container_name,
+#         image=spec.full_image,
+#         image_pull_policy="Always",
+#         ports=[client.V1ContainerPort(container_port=port, name="http", protocol="TCP")],
+#         env=env_list,
+#         # بروبس موحّدة على "/" والمنفذ الفعّال
+#         readiness_probe=client.V1Probe(
+#             http_get=client.V1HTTPGetAction(path=path, port=port),
+#             initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3
+#         ),
+#         liveness_probe=client.V1Probe(
+#             http_get=client.V1HTTPGetAction(path=path, port=port),
+#             initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3
+#         ),
+#         # startup_probe=client.V1Probe(
+#         #     http_get=client.V1HTTPGetAction(path=path, port=port),
+#         #     failure_threshold=30, period_seconds=2
+#         # ),
+#         security_context=client.V1SecurityContext(
+#             run_as_user=1001,
+#             run_as_non_root=True,
+#             allow_privilege_escalation=False,
+#         ),
+#         resources=resources,
+#     )
 
 
 
-from kubernetes import client
+# أعلى الملف (للتوافق مع kubernetes >=28 و <28)
+
 
 def upsert_deployment(spec: AppSpec) -> dict:
     ns   = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
-   # container = _container_from_spec(spec)
-    name = spec.effective_app_label
-    port = spec.effective_port
-    path = spec.effective_health_path
+    name   = spec.effective_app_label
+    port   = spec.effective_port
+    path   = spec.effective_health_path
     labels = platform_labels({"app": name})
 
+    # ---- SecurityContext ديناميكي (compat_mode / run_as_non_root / run_as_user) ----
+    sc = client.V1SecurityContext(allow_privilege_escalation=False)
+    if not getattr(spec, "compat_mode", False) and getattr(spec, "run_as_non_root", True):
+        sc.run_as_non_root = True
+        sc.run_as_user = getattr(spec, "run_as_user", None) or 1001
+    # else: نترك الصورة تعمل بإعداداتها (قد تكون root)
+
+    # ---- موارد افتراضية خفيفة (وتُستبدَل إن مرّر المستخدم موارد) ----
+    default_resources = {
+        "requests": {"cpu": "20m", "memory": "64Mi"},
+        "limits":   {"cpu": "200m", "memory": "256Mi"},
+    }
+    res = spec.resources or default_resources
+    resources = client.V1ResourceRequirements(
+        requests=res.get("requests", default_resources["requests"]),
+        limits=res.get("limits",   default_resources["limits"]),
+    )
+
+    # ---- الحاوية (بدون startupProbe افتراضيًا) ----
     container = client.V1Container(
         name=name,
-        image=f"{spec.image}:{spec.tag}" if spec.tag else spec.image,
+        image=(f"{spec.image}:{spec.tag}" if getattr(spec, "tag", None) else spec.image),
+        image_pull_policy="Always",
         ports=[client.V1ContainerPort(container_port=port, name="http")],
-        security_context=client.V1SecurityContext(run_as_non_root=True, allow_privilege_escalation=False),
-        resources=client.V1ResourceRequirements(
-            requests=(spec.resources or {}).get("requests", {"cpu": "50m",  "memory": "64Mi"}),
-            limits  =(spec.resources or {}).get("limits",   {"cpu": "300m", "memory": "256Mi"}),
-        ),
+        security_context=sc,
+        resources=resources,
         readiness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3
+            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
         ),
         liveness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3
-        ),
-        startup_probe=client.V1Probe(
-            http_get=client.V1HTTPGetAction(path=path, port=port),
-            failure_threshold=30, period_seconds=2
+            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3,
         ),
     )
 
@@ -134,13 +147,13 @@ def upsert_deployment(spec: AppSpec) -> dict:
     try:
         apps.read_namespaced_deployment(name=name, namespace=ns)
         resp = apps.patch_namespaced_deployment(name=name, namespace=ns, body=body)
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if getattr(e, "status", None) == 404:
             resp = apps.create_namespaced_deployment(namespace=ns, body=body)
         else:
             raise
-
     return resp.to_dict()
+
 
 def upsert_service(spec: AppSpec) -> dict:
     """

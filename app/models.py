@@ -21,7 +21,19 @@ class EnvVar(BaseModel):
 
 
 class AppSpec(BaseModel):
-        # --- جديد: منفذ ومسار صحة «فعّالان» لفرض الاتساق ---
+    run_as_non_root: bool = True
+    run_as_user: Optional[int] = 1001
+    compat_mode: bool = False  # إذا True نسمح بالصلاحيات الافتراضية للصورة (قد تكون root)
+
+    # افتراضيات موارد أخف
+    resources: Optional[Dict[str, Dict[str, str]]] = Field(
+        default_factory=lambda: {
+            "requests": {"cpu": "20m", "memory": "64Mi"},
+            "limits": {"cpu": "200m", "memory": "256Mi"},
+        }
+    )
+
+    # --- جديد: منفذ ومسار صحة «فعّالان» لفرض الاتساق ---
     @property
     def effective_port(self) -> int:
         """
@@ -95,7 +107,7 @@ class AppSpec(BaseModel):
     resources: Optional[Dict[str, Dict[str, str]]] = Field(
         default_factory=lambda: {
             "requests": {"cpu": "100m", "memory": "128Mi"},
-            "limits":   {"cpu": "500m", "memory": "512Mi"},
+            "limits": {"cpu": "500m", "memory": "512Mi"},
         }
     )
 
