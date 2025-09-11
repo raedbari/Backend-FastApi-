@@ -2,8 +2,8 @@ name: backend-ci
 
 on:
   push:
-    branches: ["main"]         # شغّل تلقائيًا عند أي تعديل على main
-  workflow_dispatch:           # تشغيل يدوي عند الحاجة
+    branches: ["main"]
+  workflow_dispatch:
 
 concurrency:
   group: backend-${{ github.ref }}
@@ -15,8 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       KUBECONFIG: /etc/kubernetes/admin.conf
-      IMAGE: raedbari/platform-api        # ← مستودع Docker Hub
-      TAG: ${{ github.sha }}              # ← وسم ثابت لكل commi
+      IMAGE: raedbari/platform-api
+      TAG: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -40,11 +40,11 @@ jobs:
   deploy_to_k8s:
     name: Set image & rollout on cluster
     needs: build_and_push
-    runs-on: self-hosted                  # الـRunner اللي عنده kubectl موصّل على الكلاستر
+    runs-on: self-hosted
     env:
       IMAGE: raedbari/platform-api
       TAG: ${{ github.sha }}
-      NAMESPACE: default        # ← غيّرها لو غير ذلك
+      NAMESPACE: default
       DEPLOYMENT: platform-api
       CONTAINER: api
     steps:
@@ -69,7 +69,3 @@ jobs:
           echo -n "Resulting image: "
           kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" \
             -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
-      - name: Update image & wait for rollout
-        
-        
-        
