@@ -69,3 +69,7 @@ jobs:
           echo -n "Resulting image: "
           kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" \
             -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+      - name: Update image & wait for rollout
+        
+        
+        
