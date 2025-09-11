@@ -104,12 +104,10 @@ class AppSpec(BaseModel):
     env: List[EnvVar] = Field(default_factory=list)
 
     # Resources (pass-through to Kubernetes client)
-    resources: Optional[Dict[str, Dict[str, str]]] = Field(
-        default_factory=lambda: {
-            "requests": {"cpu": "100m", "memory": "128Mi"},
-            "limits": {"cpu": "500m", "memory": "512Mi"},
-        }
-    )
+   resources: Optional[Dict[str, Dict[str, str]]] = Field(
+    default=None,
+    description="Override K8s requests/limits. If omitted, backend uses 20m/64Mi & 200m/256Mi."
+)
 
     # --------- convenience computed properties ---------
     @property
