@@ -84,7 +84,9 @@ def upsert_deployment(spec: AppSpec) -> dict:
     name   = spec.effective_app_label
     port   = spec.effective_port
     path   = spec.effective_health_path
-    labels = platform_labels({"app": name})
+   #labels = platform_labels({"app": name})
+    labels = platform_labels({"app": name, "role": "active"})
+
 
     # ---- SecurityContext ديناميكي (compat_mode / run_as_non_root / run_as_user) ----
     sc = client.V1SecurityContext(allow_privilege_escalation=False)
@@ -164,6 +166,7 @@ def upsert_service(spec: AppSpec) -> dict:
     """
     ns   = spec.namespace or get_namespace()
     core = get_api_clients()["core"]
+    selector={"app": app_label, "role": "active"}
 
     app_label = spec.effective_app_label
     svc_name  = spec.effective_service_name
@@ -183,7 +186,7 @@ def upsert_service(spec: AppSpec) -> dict:
             api_version="v1",
             metadata=client.V1ObjectMeta(labels=labels),
             spec=client.V1ServiceSpec(
-                selector={"app": app_label},
+                selector=client.V1LabelSelector(match_labels={"app": name, "role": "active"}),
                 type=svc_type,
                 ports=[client.V1ServicePort(
                     name="http",
@@ -262,3 +265,196 @@ def scale(name: str, replicas: int, namespace: Optional[str] = None) -> Dict:
     body = {"spec": {"replicas": replicas}}
     resp = apps.patch_namespaced_deployment_scale(name=name, namespace=ns, body=body)
     return resp.to_dict()
+
+
+
+def bg_prepare(spec: AppSpec) -> dict:
+    """
+    ينشئ/يحدّث Deployment جديد بعلامة role=preview
+    ويترك الـService يشير لـ role=active.
+    الاسم يكون name-<color> (blue/green) بالتناوب.
+    """
+
+
+def bg_promote(name: str, namespace: str) -> dict:
+    """
+    يجعل الـpreview هو active بعكس labels:
+    - preview -> role=active
+    - active -> role=idle (أو preview سابقاً)
+    الService لا يتغير selector تبعه (role=active)،
+    لذا التحويل فوري.
+    """
+
+
+def bg_rollback(name: str, namespace: str) -> dict:
+    """
+    يعيد الـlabels بحيث يعود الـactive السابق هو active
+    ويحذف/يعطل الـpreview الحالي (اختياري: scale=0 أو delete).
+    """
+# ----------------------------- Blue/Green helpers -----------------------------
+
+def _labels_for(app_label: str, role: str) -> dict:
+    return platform_labels({"app": app_label, "role": role})
+
+def _find_deployments_by_app(apps, ns: str, app_label: str):
+    # يرجع كل الدبلويمِنتات التي تحمل label app=<name>
+    resp = apps.list_namespaced_deployment(
+        namespace=ns, label_selector=f"app={app_label}"
+    )
+    return resp.items
+
+def _patch_deploy_labels(apps, ns: str, dep_name: str, role: str):
+    patch_body = {
+        "metadata": {"labels": {"role": role}},
+        "spec": {
+            "template": {"metadata": {"labels": {"role": role}}}
+        },
+    }
+    return apps.patch_namespaced_deployment(
+        name=dep_name, namespace=ns, body=patch_body
+    )
+
+def _scale_deploy(apps, ns: str, dep_name: str, replicas: int):
+    body = {"spec": {"replicas": replicas}}
+    return apps.patch_namespaced_deployment_scale(
+        name=dep_name, namespace=ns, body=body
+    )
+
+def bg_prepare(spec: AppSpec) -> dict:
+    """
+    ينشئ/يحدّث Deployment موازي باسم <name>-preview بعلامة role=preview
+    ولا يلمس الـService (ما زالت تشير إلى role=active).
+    """
+    ns   = spec.namespace or get_namespace()
+    apps = get_api_clients()["apps"]
+
+    app_label = spec.effective_app_label
+    preview_name = f"{app_label}-preview"
+
+    # بناء الحاوية والمواصفات كما في upsert_deployment لكن role=preview
+    name   = preview_name
+    port   = spec.effective_port
+    path   = spec.effective_health_path
+    labels = _labels_for(app_label, "preview")
+
+    # أمن الموارد/الأمان كما في upsert_deployment
+    sc = client.V1SecurityContext(allow_privilege_escalation=False)
+    if not getattr(spec, "compat_mode", False) and getattr(spec, "run_as_non_root", True):
+        sc.run_as_non_root = True
+        sc.run_as_user = getattr(spec, "run_as_user", None) or 1001
+
+    default_resources = {
+        "requests": {"cpu": "20m", "memory": "64Mi"},
+        "limits":   {"cpu": "200m", "memory": "256Mi"},
+    }
+    res = spec.resources or default_resources
+    resources = client.V1ResourceRequirements(
+        requests=res.get("requests", default_resources["requests"]),
+        limits=res.get("limits",   default_resources["limits"]),
+    )
+
+    container = client.V1Container(
+        name=app_label,
+        image=(f"{spec.image}:{spec.tag}" if getattr(spec, "tag", None) else spec.image),
+        ports=[client.V1ContainerPort(container_port=port, name="http")],
+        security_context=sc,
+        resources=resources,
+        readiness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
+        ),
+        liveness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3,
+        ),
+    )
+
+    pod_template = client.V1PodTemplateSpec(
+        metadata=client.V1ObjectMeta(labels=labels),
+        spec=client.V1PodSpec(containers=[container]),
+    )
+
+    dep_spec = client.V1DeploymentSpec(
+        replicas=spec.replicas or 1,
+        selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
+        template=pod_template,
+        strategy=client.V1DeploymentStrategy(
+            type="RollingUpdate",
+            rolling_update=client.V1RollingUpdateDeployment(max_surge=1, max_unavailable=0),
+        ),
+    )
+
+    body = client.V1Deployment(
+        api_version="apps/v1",
+        kind="Deployment",
+        metadata=client.V1ObjectMeta(name=name, namespace=ns, labels=labels),
+        spec=dep_spec,
+    )
+
+    try:
+        apps.read_namespaced_deployment(name=name, namespace=ns)
+        resp = apps.patch_namespaced_deployment(name=name, namespace=ns, body=body)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            resp = apps.create_namespaced_deployment(namespace=ns, body=body)
+        else:
+            raise
+
+    return {"preview": resp.to_dict()}
+
+def bg_promote(name: str, namespace: str) -> dict:
+    """
+    يجعل الـpreview هو الـactive:
+    - يعثر على دبلويمِنت role=preview و role=active لنفس app=<name>.
+    - يبدّل الأدوار: preview→active و active→idle (ثم يسكّل القديم إلى 0).
+    - الـService لا يتغيّر لأنه دائمًا يختار role=active.
+    """
+    ns   = namespace or get_namespace()
+    apps = get_api_clients()["apps"]
+
+    deps = _find_deployments_by_app(apps, ns, name)
+    preview = next((d for d in deps if (d.metadata.labels or {}).get("role") == "preview"), None)
+    active  = next((d for d in deps if (d.metadata.labels or {}).get("role") == "active"), None)
+
+    if preview is None:
+        raise RuntimeError("No preview deployment found to promote.")
+    # ملاحظة: قد لا يوجد active أول مرة (نشر جديد) — نتسامح.
+    if active:
+        _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
+        _scale_deploy(apps, ns, active.metadata.name, 0)
+
+    _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
+
+    return {
+        "promoted": preview.metadata.name,
+        "previous_active": getattr(active, "metadata", None) and active.metadata.name,
+    }
+
+def bg_rollback(name: str, namespace: str) -> dict:
+    """
+    يعيد السوينغ: يجعل الـidle (القديم) هو الـactive، ويحول الحالي إلى preview.
+    يعمل فقط إذا كان لدينا active + idle.
+    """
+    ns   = namespace or get_namespace()
+    apps = get_api_clients()["apps"]
+
+    deps = _find_deployments_by_app(apps, ns, name)
+    active = next((d for d in deps if (d.metadata.labels or {}).get("role") == "active"), None)
+    idle   = next((d for d in deps if (d.metadata.labels or {}).get("role") == "idle"), None)
+
+    if idle is None:
+        raise RuntimeError("No idle deployment found to rollback to.")
+
+    # الحالي النشط يصبح preview (لإبقائه خارج الخدمة لكن قابل للاختبار إن شئت)
+    if active:
+        _patch_deploy_labels(apps, ns, active.metadata.name, "preview")
+        _scale_deploy(apps, ns, active.metadata.name, 1)  # اتركه 1 إن أحببت
+
+    # القديم يعود active ويوجه له الـService
+    _patch_deploy_labels(apps, ns, idle.metadata.name, "active")
+    _scale_deploy(apps, ns, idle.metadata.name, 1)
+
+    return {
+        "restored_active": idle.metadata.name,
+        "demoted": getattr(active, "metadata", None) and active.metadata.name,
+    }

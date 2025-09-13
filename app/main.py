@@ -14,8 +14,15 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 
 from .models import AppSpec, ScaleRequest, StatusResponse
-from .k8s_ops import upsert_deployment, upsert_service, list_status, scale
+from .k8s_ops import (
+    upsert_deployment, upsert_service, list_status, scale,
+    bg_prepare, bg_promote, bg_rollback,  
+)
+from pydantic import BaseModel
 
+class NameNS(BaseModel):
+    name: str
+    namespace: str | None = None  
 # -------------------------------------------------------------------
 # FastAPI app
 # -------------------------------------------------------------------
@@ -25,13 +32,7 @@ app = FastAPI(
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
 )
 
-# -------------------------------------------------------------------
-# CORS (allow your frontend origins)
-# Examples:
-#   ALLOWED_ORIGINS=http://localhost:3000
-#   ALLOWED_ORIGINS=http://<EC2_PUBLIC_IP>:30001
-#   ALLOWED_ORIGINS=http://localhost:3000,http://<EC2_PUBLIC_IP>:30001
-# -------------------------------------------------------------------
+
 ALLOWED_ORIGINS = [
     o.strip()
     for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -100,5 +101,46 @@ async def apps_status(
 ):
     try:
         return list_status(name=name, namespace=namespace)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+
+@app.post("/apps/bluegreen/prepare")
+async def bluegreen_prepare(spec: AppSpec):
+    """
+    ينشئ/يحدّث نسخة preview باسم <name>-preview (role=preview) دون تحويل المرور.
+    سنضمن وجود Service يختار role=active (لن يُمسّ).
+    """
+    try:
+        # نتأكد أن الـService موجودة وتختار always role=active
+        _ = upsert_service(spec)
+        res = bg_prepare(spec)
+        return {"ok": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/apps/bluegreen/promote")
+async def bluegreen_promote(req: NameNS):
+    """
+    ترقية لحظية: preview → active (ويُسكّل الـactive السابق إلى 0 ويُعلَّم idle).
+    الـService لا يتغير لأن selector ثابت على role=active.
+    """
+    try:
+        res = bg_promote(name=req.name, namespace=req.namespace or os.getenv("DEFAULT_NAMESPACE", "default"))
+        return {"ok": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/apps/bluegreen/rollback")
+async def bluegreen_rollback(req: NameNS):
+    """
+    رجوع فوري: يعيد الـidle القديم ليصبح active، والحالي يُحوّل إلى preview.
+    """
+    try:
+        res = bg_rollback(name=req.name, namespace=req.namespace or os.getenv("DEFAULT_NAMESPACE", "default"))
+        return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
