@@ -165,10 +165,11 @@ def upsert_service(spec: AppSpec) -> dict:
     - إذا لم توجد، ننشئ ClusterIP افتراضيًا.
     """
     ns   = spec.namespace or get_namespace()
+    app_label = spec.effective_app_label
     core = get_api_clients()["core"]
     selector={"app": app_label, "role": "active"}
 
-    app_label = spec.effective_app_label
+    
     svc_name  = spec.effective_service_name
     labels    = platform_labels({"app": app_label})
     port      = spec.effective_port
