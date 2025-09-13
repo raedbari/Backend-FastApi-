@@ -113,7 +113,7 @@ async def bluegreen_prepare(spec: AppSpec):
     سنضمن وجود Service يختار role=active (لن يُمسّ).
     """
     try:
-        # نتأكد أن الـService موجودة وتختار always role=active
+        # نتأكد أن الـService موجودة وتختار always role=activ
         _ = upsert_service(spec)
         res = bg_prepare(spec)
         return {"ok": True, **res}
