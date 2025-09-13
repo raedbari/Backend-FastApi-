@@ -156,23 +156,18 @@ def upsert_deployment(spec: AppSpec) -> dict:
             raise
     return resp.to_dict()
 
-
 def upsert_service(spec: AppSpec) -> dict:
-    """
-    Create or patch a Service named <spec.service_name> في الـnamespace المحسوم.
-    - إذا كانت الخدمة موجودة ونوعها NodePort، نُبقي nodePort/type كما هما.
-    - نضبط دائمًا targetPort ليطابق المنفذ الفعّال للحاوية (effective_port).
-    - إذا لم توجد، ننشئ ClusterIP افتراضيًا.
-    """
     ns   = spec.namespace or get_namespace()
-    app_label = spec.effective_app_label
     core = get_api_clients()["core"]
-    selector={"app": app_label, "role": "active"}
 
-    
+    # عرّف القيم أولاً
+    app_label = spec.effective_app_label
     svc_name  = spec.effective_service_name
-    labels    = platform_labels({"app": app_label})
     port      = spec.effective_port
+
+    # الخدمة دائمًا توجه الـ active
+    labels   = platform_labels({"app": app_label, "role": "active"})
+    selector = {"app": app_label, "role": "active"}
 
     try:
         existing = core.read_namespaced_service(name=svc_name, namespace=ns)
@@ -187,14 +182,14 @@ def upsert_service(spec: AppSpec) -> dict:
             api_version="v1",
             metadata=client.V1ObjectMeta(labels=labels),
             spec=client.V1ServiceSpec(
-                selector=client.V1LabelSelector(match_labels={"app": name, "role": "active"}),
+                selector=selector,   # ← لا تستخدم V1LabelSelector هنا
                 type=svc_type,
                 ports=[client.V1ServicePort(
                     name="http",
-                    port=cluster_port,      # نُبقي Port الخدمة كما كان
-                    target_port=port,       # نربطه بمنفذ الحاوية الفعّال
+                    port=cluster_port,
+                    target_port=port,
                     protocol="TCP",
-                    node_port=node_port     # فقط إن كان NodePort
+                    node_port=node_port
                 )]
             )
         )
@@ -208,7 +203,7 @@ def upsert_service(spec: AppSpec) -> dict:
                 metadata=client.V1ObjectMeta(name=svc_name, namespace=ns, labels=labels),
                 spec=client.V1ServiceSpec(
                     type="ClusterIP",
-                    selector={"app": app_label},
+                    selector=selector,
                     ports=[client.V1ServicePort(name="http", port=port, target_port=port, protocol="TCP")]
                 )
             )
