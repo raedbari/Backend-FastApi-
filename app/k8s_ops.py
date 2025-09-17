@@ -372,7 +372,7 @@ def bg_prepare(spec: AppSpec) -> dict:
 
     dep_spec = client.V1DeploymentSpec(
         replicas=spec.replicas or 1,
-        selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
+       #selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
         selector=client.V1LabelSelector(match_labels={"app": app_label}),
         template=pod_template,
         strategy=client.V1DeploymentStrategy(
@@ -514,3 +514,4 @@ def _current_svc_selector(svc) -> dict:
 
 def _patch_service_selector(core, ns: str, svc_name: str, selector: dict):
     return core.patch_namespaced_service(name=svc_name, namespace=ns, body={"spec": {"selector": selector}})
+
