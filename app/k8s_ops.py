@@ -373,6 +373,7 @@ def bg_prepare(spec: AppSpec) -> dict:
     dep_spec = client.V1DeploymentSpec(
         replicas=spec.replicas or 1,
         selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
+        selector=client.V1LabelSelector(match_labels={"app": app_label}),
         template=pod_template,
         strategy=client.V1DeploymentStrategy(
             type="RollingUpdate",
@@ -400,57 +401,116 @@ def bg_prepare(spec: AppSpec) -> dict:
 
 def bg_promote(name: str, namespace: str) -> dict:
     """
-    يجعل الـpreview هو الـactive:
-    - يعثر على دبلويمِنت role=preview و role=active لنفس app=<name>.
-    - يبدّل الأدوار: preview→active و active→idle (ثم يسكّل القديم إلى 0).
-    - الـService لا يتغيّر لأنه دائمًا يختار role=active.
+    تحويل المرور إلى نسخة preview دون لمس Labels الدبلويمِنتات:
+    - تأكيد وجود deploy/<name> و deploy/<name>-preview و svc/<name>.
+    - Patch لselector الخدمة ليصبح {app: <name>, role: preview}.
+    - Scale بالاسم: القديم -> 0 ، المعاينة -> (>=1).
     """
-    ns   = namespace or get_namespace()
-    apps = get_api_clients()["apps"]
+    ns     = namespace or get_namespace()
+    apis   = get_api_clients()
+    apps   = apis["apps"]
+    core   = apis["core"]
+    active = name
+    preview= f"{name}-preview"
+    svc_nm = name
 
-    deps = _find_deployments_by_app(apps, ns, name)
-    preview = next((d for d in deps if (d.metadata.labels or {}).get("role") == "preview"), None)
-    active  = next((d for d in deps if (d.metadata.labels or {}).get("role") == "active"), None)
+    # تحقق من وجود الموارد
+    try:
+        dep_active  = apps.read_namespaced_deployment(name=active,  namespace=ns)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            raise RuntimeError(f"Active deployment '{active}' not found in '{ns}'.")
+        raise
+    try:
+        dep_preview = apps.read_namespaced_deployment(name=preview, namespace=ns)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            raise RuntimeError(f"Preview deployment '{preview}' not found in '{ns}'.")
+        raise
+    try:
+        svc = _read_service(core, ns, svc_nm)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            raise RuntimeError(f"Service '{svc_nm}' not found in '{ns}'.")
+        raise
 
-    if preview is None:
-        raise RuntimeError("No preview deployment found to promote.")
-    # ملاحظة: قد لا يوجد active أول مرة (نشر جديد) — نتسامح.
-    if active:
-        _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
-        _scale_deploy(apps, ns, active.metadata.name, 0)
+    # بدّل Selector الخدمة إلى preview (Idempotent)
+    desired_selector = {"app": name, "role": "preview"}
+    if _current_svc_selector(svc) != desired_selector:
+        _patch_service_selector(core, ns, svc_nm, desired_selector)
 
-    _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
+    # Scale بالاسم (Idempotent)
+    # القديم -> 0
+    _scale_deploy(apps, ns, active, 0)
+    # المعاينة -> لا تقل عن 1
+    preview_replicas = max((dep_preview.spec.replicas or 1), 1)
+    _scale_deploy(apps, ns, preview, preview_replicas)
 
     return {
-        "promoted": preview.metadata.name,
-        "previous_active": getattr(active, "metadata", None) and active.metadata.name,
+        "status": "promoted",
+        "service_selector": desired_selector,
+        "scaled": {active: 0, preview: preview_replicas},
     }
+
 
 def bg_rollback(name: str, namespace: str) -> dict:
     """
-    يعيد السوينغ: يجعل الـidle (القديم) هو الـactive، ويحول الحالي إلى preview.
-    يعمل فقط إذا كان لدينا active + idle.
+    إعادة المرور إلى النسخة النشطة (active):
+    - Patch لselector الخدمة ليصبح {app: <name>, role: active}.
+    - Scale بالاسم: active -> (>=1) ، preview -> 0.
     """
-    ns   = namespace or get_namespace()
-    apps = get_api_clients()["apps"]
+    ns     = namespace or get_namespace()
+    apis   = get_api_clients()
+    apps   = apis["apps"]
+    core   = apis["core"]
+    active = name
+    preview= f"{name}-preview"
+    svc_nm = name
 
-    deps = _find_deployments_by_app(apps, ns, name)
-    active = next((d for d in deps if (d.metadata.labels or {}).get("role") == "active"), None)
-    idle   = next((d for d in deps if (d.metadata.labels or {}).get("role") == "idle"), None)
+    # اختياريًا نتحقق من وجود الـDeployments (لرسائل أوضح)
+    try:
+        dep_active  = apps.read_namespaced_deployment(name=active,  namespace=ns)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            raise RuntimeError(f"Active deployment '{active}' not found in '{ns}'.")
+        raise
+    try:
+        dep_preview = apps.read_namespaced_deployment(name=preview, namespace=ns)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            # في بعض الحالات قد لا يوجد preview (لا بأس)، نرجّع فقط تعديل الخدمة وتسكيل active
+            dep_preview = None
+        else:
+            raise
 
-    if idle is None:
-        raise RuntimeError("No idle deployment found to rollback to.")
+    # بدّل Selector الخدمة إلى active (Idempotent)
+    desired_selector = {"app": name, "role": "active"}
+    try:
+        svc = _read_service(core, ns, svc_nm)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            raise RuntimeError(f"Service '{svc_nm}' not found in '{ns}'.")
+        raise
+    if _current_svc_selector(svc) != desired_selector:
+        _patch_service_selector(core, ns, svc_nm, desired_selector)
 
-    # الحالي النشط يصبح preview (لإبقائه خارج الخدمة لكن قابل للاختبار إن شئت)
-    if active:
-        _patch_deploy_labels(apps, ns, active.metadata.name, "preview")
-        _scale_deploy(apps, ns, active.metadata.name, 1)  # اتركه 1 إن أحببت
-
-    # القديم يعود active ويوجه له الـService
-    _patch_deploy_labels(apps, ns, idle.metadata.name, "active")
-    _scale_deploy(apps, ns, idle.metadata.name, 1)
+    # Scale بالاسم
+    active_replicas = max((dep_active.spec.replicas or 1), 1)
+    _scale_deploy(apps, ns, active, active_replicas)
+    if dep_preview is not None:
+        _scale_deploy(apps, ns, preview, 0)
 
     return {
-        "restored_active": idle.metadata.name,
-        "demoted": getattr(active, "metadata", None) and active.metadata.name,
+        "status": "rolled-back",
+        "service_selector": desired_selector,
+        "scaled": {active: active_replicas, preview: 0 if dep_preview else "n/a"},
     }
+
+def _read_service(core, ns: str, svc_name: str):
+    return core.read_namespaced_service(name=svc_name, namespace=ns)
+
+def _current_svc_selector(svc) -> dict:
+    return (svc.spec.selector or {}) if getattr(svc.spec, "selector", None) else {}
+
+def _patch_service_selector(core, ns: str, svc_name: str, selector: dict):
+    return core.patch_namespaced_service(name=svc_name, namespace=ns, body={"spec": {"selector": selector}})
