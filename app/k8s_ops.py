@@ -227,27 +227,43 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
             namespace=ns, label_selector="managed-by=cloud-devops-platform"
         ).items
 
-    items: List[StatusItem] = []
+        items: List[StatusItem] = []
     for d in deployments:
         spec = d.spec or client.V1DeploymentSpec()
         status = d.status or client.V1DeploymentStatus()
 
         image = ""
         try:
-            image = (spec.template.spec.containers or [])[0].image  # type: ignore[assignment]
+            image = (spec.template.spec.containers or [])[0].image  
         except Exception:
             pass
 
         conds = {c.type: c.status for c in (status.conditions or [])}
+
+        d_name = d.metadata.name
+        ns = namespace or get_namespace()
+        try:
+            svc_sel = get_service_selector(d_name, ns) 
+        except Exception:
+            svc_sel = {}
+
+        app_label = (d.metadata.labels or {}).get("app", d_name)
+        try:
+            prev_ok = get_preview_ready(app_label, ns)
+        except Exception:
+            prev_ok = False
+
         items.append(
             StatusItem(
-                name=d.metadata.name,
+                name=d_name,
                 image=image,
                 desired=spec.replicas or 0,
                 current=status.replicas or 0,
                 available=status.available_replicas or 0,
                 updated=status.updated_replicas or 0,
                 conditions=conds,
+                svc_selector=svc_sel,    
+                preview_ready=prev_ok,   
             )
         )
 
@@ -515,3 +531,27 @@ def _current_svc_selector(svc) -> dict:
 def _patch_service_selector(core, ns: str, svc_name: str, selector: dict):
     return core.patch_namespaced_service(name=svc_name, namespace=ns, body={"spec": {"selector": selector}})
 
+def is_deploy_ready(apps, ns: str, name: str, min_available: int = 1) -> bool:
+    try:
+        d = apps.read_namespaced_deployment(name=name, namespace=ns)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            return False
+        raise
+    st = d.status or client.V1DeploymentStatus()
+    return (st.available_replicas or 0) >= min_available
+
+def get_service_selector(name: str, ns: str) -> dict:
+    core = get_api_clients()["core"]
+    try:
+        svc = core.read_namespaced_service(name=name, namespace=ns)
+        return svc.spec.selector or {}
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            return {}
+        raise
+
+def get_preview_ready(app_label: str, ns: str) -> bool:
+    apps = get_api_clients()["apps"]
+    preview_name = f"{app_label}-preview"
+    return is_deploy_ready(apps, ns, preview_name, 1)
