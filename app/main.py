@@ -22,7 +22,9 @@ from pydantic import BaseModel
 
 class NameNS(BaseModel):
     name: str
-    namespace: str | None = None  
+    namespace: str | None = None
+
+
 # -------------------------------------------------------------------
 # FastAPI app
 # -------------------------------------------------------------------
@@ -32,20 +34,26 @@ app = FastAPI(
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
 )
 
-
-ALLOWED_ORIGINS = [
+# -------------------------------------------------------------------
+# CORS configuration
+# -------------------------------------------------------------------
+origins = [
     o.strip()
-    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://rango-project.duckdns.org:30001,http://localhost:3001"
+    ).split(",")
     if o.strip()
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,  # set True only if you use cookies/sessions
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    allow_origins=origins,
+    allow_credentials=False,  # set True فقط إذا عندك cookies/sessions
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
 
 # -------------------------------------------------------------------
 # Basic routes
@@ -144,3 +152,21 @@ async def bluegreen_rollback(req: NameNS):
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+
+
+# app/main.py
+"""
+Minimal API bootstrap for the platform:
+- GET /healthz : health check for probes and load balancers.
+- GET /         : quick welcome message.
+- POST /_debug/validate-appspec : temporary route to validate AppSpec payloads.
+- POST /apps/deploy : upsert Deployment + Service.
+- POST /apps/scale  : patch Deployment scale subresource.
+- GET  /apps/status : list status for managed apps or a specific app by name.
+- POST /apps/bluegreen/prepare : create/update preview Deployment.
+- POST /apps/bluegreen/promote : promote preview → active.
+- POST /apps/bluegreen/rollback : rollback to previous active.
+"""
+
