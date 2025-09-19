@@ -156,17 +156,4 @@ async def bluegreen_rollback(req: NameNS):
 
 
 
-# app/main.py
-"""
-Minimal API bootstrap for the platform:
-- GET /healthz : health check for probes and load balancers.
-- GET /         : quick welcome message.
-- POST /_debug/validate-appspec : temporary route to validate AppSpec payloads.
-- POST /apps/deploy : upsert Deployment + Service.
-- POST /apps/scale  : patch Deployment scale subresource.
-- GET  /apps/status : list status for managed apps or a specific app by name.
-- POST /apps/bluegreen/prepare : create/update preview Deployment.
-- POST /apps/bluegreen/promote : promote preview → active.
-- POST /apps/bluegreen/rollback : rollback to previous active.
-"""
 

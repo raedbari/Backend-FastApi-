@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
 
 from .k8s_client import get_api_clients, get_namespace, platform_labels
 from .models import AppSpec, StatusItem, StatusResponse
-
+from kubernetes.client import ApiException
 
 # def _container_from_spec(spec: AppSpec) -> client.V1Container:
 #     """Convert AppSpec into a V1Container (ports, probes, resources, env, security)."""
@@ -415,12 +415,42 @@ def bg_prepare(spec: AppSpec) -> dict:
 
     return {"preview": resp.to_dict()}
 
+
+def _ensure_deploy_template_labels(apps, ns: str, deploy_name: str, extra: dict) -> dict:
+    """
+    يدمج extra داخل labels لقالب البود (spec.template.metadata.labels) للـ Deployment المحدد.
+    لا يلمس الـ selector الخاص بالـ Deployment.
+    يعيد labels النهائية بعد الدمج.
+    """
+    dep = apps.read_namespaced_deployment(name=deploy_name, namespace=ns)
+    tmpl = dep.spec.template
+    cur = (tmpl.metadata.labels or {}).copy()
+    changed = False
+    for k, v in (extra or {}).items():
+        if cur.get(k) != v:
+            cur[k] = v
+            changed = True
+    if changed:
+        patch_body = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "labels": cur
+                    }
+                }
+            }
+        }
+        apps.patch_namespaced_deployment(name=deploy_name, namespace=ns, body=patch_body)
+    return cur
+
+
 def bg_promote(name: str, namespace: str) -> dict:
     """
-    تحويل المرور إلى نسخة preview دون لمس Labels الدبلويمِنتات:
-    - تأكيد وجود deploy/<name> و deploy/<name>-preview و svc/<name>.
-    - Patch لselector الخدمة ليصبح {app: <name>, role: preview}.
-    - Scale بالاسم: القديم -> 0 ، المعاينة -> (>=1).
+    تحويل المرور إلى نسخة preview:
+      - تأكيد وجود deploy/<name> و deploy/<name>-preview و svc/<name>.
+      - ضمان (ensure) لابلز القوالب: active(role=active) و preview(role=preview).
+      - Patch لـ selector الخدمة -> {app: <name>, role: preview}.
+      - Scale: القديم -> 0 ، المعاينة -> (>=1).
     """
     ns     = namespace or get_namespace()
     apis   = get_api_clients()
@@ -450,21 +480,28 @@ def bg_promote(name: str, namespace: str) -> dict:
             raise RuntimeError(f"Service '{svc_nm}' not found in '{ns}'.")
         raise
 
+    # ثبّت Labels لقوالب البودز (لا نلمس الـ selector للـ deployment)
+    lbl_active  = _ensure_deploy_template_labels(apps, ns, active,  {"app": name, "role": "active"})
+    lbl_preview = _ensure_deploy_template_labels(apps, ns, preview, {"app": name, "role": "preview"})
+
     # بدّل Selector الخدمة إلى preview (Idempotent)
     desired_selector = {"app": name, "role": "preview"}
     if _current_svc_selector(svc) != desired_selector:
         _patch_service_selector(core, ns, svc_nm, desired_selector)
 
     # Scale بالاسم (Idempotent)
-    # القديم -> 0
-    _scale_deploy(apps, ns, active, 0)
-    # المعاينة -> لا تقل عن 1
+    _scale_deploy(apps, ns, active, 0)  # القديم -> 0
     preview_replicas = max((dep_preview.spec.replicas or 1), 1)
-    _scale_deploy(apps, ns, preview, preview_replicas)
+    _scale_deploy(apps, ns, preview, preview_replicas)  # المعاينة -> >=1
 
     return {
+        "ok": True,
         "status": "promoted",
         "service_selector": desired_selector,
+        "labels": {
+            active: lbl_active,
+            preview: lbl_preview,
+        },
         "scaled": {active: 0, preview: preview_replicas},
     }
 
@@ -472,8 +509,9 @@ def bg_promote(name: str, namespace: str) -> dict:
 def bg_rollback(name: str, namespace: str) -> dict:
     """
     إعادة المرور إلى النسخة النشطة (active):
-    - Patch لselector الخدمة ليصبح {app: <name>, role: active}.
-    - Scale بالاسم: active -> (>=1) ، preview -> 0.
+      - ضمان (ensure) لابلز القوالب: active(role=active) و preview(role=preview) إن وجدت.
+      - Patch لـ selector الخدمة -> {app: <name>, role: active}.
+      - Scale: active -> (>=1) ، preview -> 0 (إن وجدت).
     """
     ns     = namespace or get_namespace()
     apis   = get_api_clients()
@@ -483,21 +521,28 @@ def bg_rollback(name: str, namespace: str) -> dict:
     preview= f"{name}-preview"
     svc_nm = name
 
-    # اختياريًا نتحقق من وجود الـDeployments (لرسائل أوضح)
+    # تحقق من الموارد
     try:
         dep_active  = apps.read_namespaced_deployment(name=active,  namespace=ns)
     except ApiException as e:
         if getattr(e, "status", None) == 404:
             raise RuntimeError(f"Active deployment '{active}' not found in '{ns}'.")
         raise
+
+    dep_preview = None
     try:
         dep_preview = apps.read_namespaced_deployment(name=preview, namespace=ns)
     except ApiException as e:
         if getattr(e, "status", None) == 404:
-            # في بعض الحالات قد لا يوجد preview (لا بأس)، نرجّع فقط تعديل الخدمة وتسكيل active
             dep_preview = None
         else:
             raise
+
+    # ثبّت Labels لقوالب البودز
+    lbl_active  = _ensure_deploy_template_labels(apps, ns, active,  {"app": name, "role": "active"})
+    lbl_preview = None
+    if dep_preview is not None:
+        lbl_preview = _ensure_deploy_template_labels(apps, ns, preview, {"app": name, "role": "preview"})
 
     # بدّل Selector الخدمة إلى active (Idempotent)
     desired_selector = {"app": name, "role": "active"}
@@ -510,15 +555,20 @@ def bg_rollback(name: str, namespace: str) -> dict:
     if _current_svc_selector(svc) != desired_selector:
         _patch_service_selector(core, ns, svc_nm, desired_selector)
 
-    # Scale بالاسم
+    # Scale
     active_replicas = max((dep_active.spec.replicas or 1), 1)
     _scale_deploy(apps, ns, active, active_replicas)
     if dep_preview is not None:
         _scale_deploy(apps, ns, preview, 0)
 
     return {
+        "ok": True,
         "status": "rolled-back",
         "service_selector": desired_selector,
+        "labels": {
+            active: lbl_active,
+            preview: lbl_preview if lbl_preview is not None else "n/a",
+        },
         "scaled": {active: active_replicas, preview: 0 if dep_preview else "n/a"},
     }
 
