@@ -243,7 +243,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
         d_name = d.metadata.name
         ns = namespace or get_namespace()
         try:
-            svc_sel = get_service_selector(d_name, ns) 
+            svc_sel = get_service_selector(app_label, ns) 
         except Exception:
             svc_sel = {}
 
