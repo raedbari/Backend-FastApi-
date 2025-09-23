@@ -1,17 +1,11 @@
 # app/main.py
-"""
-Minimal API bootstrap for the platform:
-- GET /healthz : health check for probes and load balancers.
-- GET /         : quick welcome message.
-- POST /_debug/validate-appspec : temporary route to validate AppSpec payloads.
-- POST /apps/deploy : upsert Deployment + Service.
-- POST /apps/scale  : patch Deployment scale subresource.
-- GET  /apps/status : list status for managed apps or a specific app by name.
-"""
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os
+from app.auth.routes import r as auth_router
+from app.monitor.routes import r as monitor_router
+from app.auth.middleware import require_auth
 
 from .models import AppSpec, ScaleRequest, StatusResponse
 from .k8s_ops import (
@@ -35,6 +29,12 @@ app = FastAPI(
 )
 
 # -------------------------------------------------------------------
+# Routers (Auth/Monitor)
+# -------------------------------------------------------------------
+app.include_router(auth_router)     # /api/auth/...
+app.include_router(monitor_router)  # /api/monitor/...
+
+# -------------------------------------------------------------------
 # CORS configuration
 # -------------------------------------------------------------------
 origins = [
@@ -49,7 +49,7 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=False,  # set True فقط إذا عندك cookies/sessions
+    allow_credentials=True,  # set True فقط إذا عندك cookies/sessions
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -116,10 +116,7 @@ async def apps_status(
 
 @app.post("/apps/bluegreen/prepare")
 async def bluegreen_prepare(spec: AppSpec):
-    """
-    ينشئ/يحدّث نسخة preview باسم <name>-preview (role=preview) دون تحويل المرور.
-    سنضمن وجود Service يختار role=active (لن يُمسّ).
-    """
+  
     try:
         # نتأكد أن الـService موجودة وتختار always role=activ
         _ = upsert_service(spec)
@@ -131,10 +128,7 @@ async def bluegreen_prepare(spec: AppSpec):
 
 @app.post("/apps/bluegreen/promote")
 async def bluegreen_promote(req: NameNS):
-    """
-    ترقية لحظية: preview → active (ويُسكّل الـactive السابق إلى 0 ويُعلَّم idle).
-    الـService لا يتغير لأن selector ثابت على role=active.
-    """
+   
     try:
         res = bg_promote(name=req.name, namespace=req.namespace or os.getenv("DEFAULT_NAMESPACE", "default"))
         return {"ok": True, **res}
