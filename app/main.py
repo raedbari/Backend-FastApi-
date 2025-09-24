@@ -1,5 +1,6 @@
 # app/main.py
 
+
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -146,7 +147,7 @@ async def bluegreen_rollback(req: NameNS):
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
-        
+
 @app.on_event("startup")
 def init_db():
     Base.metadata.create_all(bind=engine)
