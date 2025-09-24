@@ -5,10 +5,25 @@ from __future__ import annotations
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 import os
-
+from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, Integer, String, Index
 # ----- K8s naming pattern & defaults -----
 DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
+
+
+
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    tenant_id = Column(String, index=True, nullable=False)
+    role = Column(String, default="admin")
+
+Index("ix_users_tenant_username", User.tenant_id, User.username)
 
 
 class EnvVar(BaseModel):
@@ -107,3 +122,4 @@ class KPIQuery(BaseModel):
     app: Optional[str] = None
     window: str = Field("1m", description="e.g., 1m or 5m")
     namespace: Optional[str] = Field(default=None, pattern=DNS1123_LABEL)
+
