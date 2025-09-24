@@ -6,3 +6,10 @@ httpx==0.27.*
 PyJWT==2.9.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
+
+SQLAlchemy>=2.0
+alembic          # اختياري للهجرات
+PyJWT==2.9.0
+
+# إن ستستخدم PostgreSQL:
+# psycopg2-binary
