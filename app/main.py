@@ -1,19 +1,16 @@
 # app/main.py
 
-
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
-# from app.auth.routes import r as auth_router
-# from app.monitor.routes import r as monitor_router
-# from app.auth.middleware import require_auth
 
 from .models import AppSpec, ScaleRequest, StatusResponse
 from .k8s_ops import (
     upsert_deployment, upsert_service, list_status, scale,
-    bg_prepare, bg_promote, bg_rollback,  
+    bg_prepare, bg_promote, bg_rollback,
 )
 from pydantic import BaseModel
+
 
 class NameNS(BaseModel):
     name: str
@@ -30,10 +27,12 @@ app = FastAPI(
 )
 
 # -------------------------------------------------------------------
-# Routers (Auth/Monitor)
+# Routers (Monitor فقط لو محتاج)
 # -------------------------------------------------------------------
-app.include_router(auth_router)     # /api/auth/...
-app.include_router(monitor_router)  # /api/monitor/...
+# من غير login
+# إذا تحتاج monitor endpoints رجّع الاستيراد في الأعلى وخليه هنا
+# from app.monitor.routes import r as monitor_router
+# app.include_router(monitor_router)  # /api/monitor/...
 
 # -------------------------------------------------------------------
 # CORS configuration
