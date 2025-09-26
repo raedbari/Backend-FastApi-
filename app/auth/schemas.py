@@ -1,10 +1,10 @@
-from pydantic import BaseModel
+# from pydantic import BaseModel
 
-class LoginIn(BaseModel):
-    username: str
-    password: str
+# class LoginIn(BaseModel):
+#     username: str
+#     password: str
 
-class MeOut(BaseModel):
-    user_id: int
-    tenant_id: str
-    role: str
+# class MeOut(BaseModel):
+#     user_id: int
+#     tenant_id: str
+#     role: str
