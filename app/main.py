@@ -4,9 +4,9 @@
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os
-from app.auth.routes import r as auth_router
-from app.monitor.routes import r as monitor_router
-from app.auth.middleware import require_auth
+# from app.auth.routes import r as auth_router
+# from app.monitor.routes import r as monitor_router
+# from app.auth.middleware import require_auth
 
 from .models import AppSpec, ScaleRequest, StatusResponse
 from .k8s_ops import (
@@ -148,6 +148,6 @@ async def bluegreen_rollback(req: NameNS):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-@app.on_event("startup")
-def init_db():
-    Base.metadata.create_all(bind=engine)
+# @app.on_event("startup")
+# def init_db():
+#     Base.metadata.create_all(bind=engine)
