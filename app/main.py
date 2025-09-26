@@ -1,6 +1,6 @@
 # app/main.py
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query   # <-- خلي Query هنا
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
@@ -27,10 +27,8 @@ app = FastAPI(
 )
 
 # -------------------------------------------------------------------
-# Routers (Monitor فقط لو محتاج)
+# Routers (disabled login)
 # -------------------------------------------------------------------
-# من غير login
-# إذا تحتاج monitor endpoints رجّع الاستيراد في الأعلى وخليه هنا
 # from app.monitor.routes import r as monitor_router
 # app.include_router(monitor_router)  # /api/monitor/...
 
@@ -53,6 +51,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # -------------------------------------------------------------------
