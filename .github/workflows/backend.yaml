@@ -44,7 +44,7 @@ jobs:
     env:
       IMAGE: raedbari/platform-api
       TAG: ${{ github.sha }}
-      NAMESPACE: project-env
+      NAMESPACE: default
       DEPLOYMENT: platform-api
       CONTAINER: api
     steps:
