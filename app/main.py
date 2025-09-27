@@ -11,6 +11,7 @@ from .k8s_ops import (
 )
 from pydantic import BaseModel
 
+from app.monitor import router as monitor_router
 
 class NameNS(BaseModel):
     name: str
@@ -146,6 +147,6 @@ async def bluegreen_rollback(req: NameNS):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-# @app.on_event("startup")
-# def init_db():
-#     Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+app.include_router(monitor_router)
