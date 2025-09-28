@@ -185,7 +185,7 @@ async def logs(ns: str, app: str, q: Optional[str]=None, since: Optional[int]=90
 async def k8s_events(ns: str, app: str, since: Optional[int]=3600):
     ns_guard(ns)
     if not k8s: raise HTTPException(500, "k8s client not initialized")
-    # fieldSelector by involvedObject labels is limited; filter client-sideE
+    # fieldSelector by involvedObject labels is limited; filter client-sideEe
     evs = k8s.list_namespaced_event(ns)
     cutoff = time.time() - since
     out=[]
