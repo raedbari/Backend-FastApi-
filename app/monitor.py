@@ -217,22 +217,37 @@ def get_logs(
     return JSONResponse({"items": items})
 
 @router.get("/events")
-async def k8s_events(ns: str, app: str, since: Optional[int]=3600):
-    ns_guard(ns)
-    if not k8s: raise HTTPException(500, "k8s client not initialized")
-    # fieldSelector by involvedObject labels is limited; filter client-sideEee
-    evs = k8s.list_namespaced_event(ns)
-    cutoff = time.time() - since
-    out=[]
+def k8s_events(
+    ns: str = Query(..., alias="ns"),
+    app: str = Query(..., alias="app"),
+    since: int = Query(3600),
+):
+    ev_api = client.EventsV1Api()              # <--- هنا التغيير المهم
+    evs = ev_api.list_namespaced_event(ns)
+
+    items = []
     for e in evs.items:
-        if e.event_time and e.event_time.timestamp() < cutoff: 
+        # EventsV1: عنده e.regarding
+        obj = getattr(e, "regarding", None)
+        name = getattr(obj, "name", "") if obj else ""
+        if app and app not in (name or ""):
             continue
-        if e.regarding and e.regarding.namespace == ns and app in (e.regarding.name or ""):
-            out.append({
-                "type": e.type,
-                "reason": e.reason,
-                "note": e.note,
-                "at": (e.event_time or e.last_timestamp).isoformat() if (e.event_time or e.last_timestamp) else None,
-                "obj": {"kind": e.regarding.kind, "name": e.regarding.name}
-            })
-    return {"items": out}
+
+        # اختَر أنسب خانة زمنية متوفرة
+        ts = getattr(e, "event_time", None) or \
+             getattr(e, "deprecated_last_timestamp", None) or \
+             getattr(e.metadata, "creation_timestamp", None)
+
+        items.append({
+            "type":   getattr(e, "type", None),
+            "reason": getattr(e, "reason", None),
+            "message": getattr(e, "note", None) or getattr(e, "message", None),
+            "ts": str(ts) if ts else None,
+            "regarding": {
+                "kind":  getattr(obj, "kind", None) if obj else None,
+                "name":  name,
+                "uid":   getattr(obj, "uid", None) if obj else None,
+            }
+        })
+
+    return JSONResponse({"items": items})
