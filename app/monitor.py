@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 import os, re, time
 import httpx
-from typing import List, Optional
+from typing import List, Optional , Dict, Any
+
 from kubernetes import client, config
 
 PROM_URL = os.environ["PROM_URL"].rstrip("/")
@@ -63,7 +64,7 @@ def _loki_query_range(query: str, start_ns: int, end_ns: int, limit: int = 200, 
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()  # surface 4xx/5xx to caller
     return r.json()
-    
+
 # ---- Schemas ----
 class AppItem(BaseModel):
     namespace: str
