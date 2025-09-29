@@ -161,25 +161,60 @@ async def overview(ns: str, app: str):
 
     return Overview(namespace=ns, app=app, replicas=replicas, cpu_mcores=cpu, mem_bytes=mem, http=http)
 
+# app/monitor.py (أو نفس الملف الذي فيه /monitor/logs)
+import time, requests, os
+from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
+
+router = APIRouter(prefix="/monitor", tags=["monitor"])
+
+LOKI_URL = os.environ.get("LOKI_URL", "").rstrip("/")
+
 @router.get("/logs")
-async def logs(ns: str, app: str, q: Optional[str]=None, since: Optional[int]=900, limit: int=500):
-    ns_guard(ns)
-    # Loki instant query over recent window
-    now_ns = int(time.time()*1e9)
-    start_ns = now_ns - since*1_000_000_000
-    sel = f'{{namespace="{ns}",app="{app}"}}'
-    if q:
-        sel += f' |= `{q}`'
-    params = {"query": sel, "limit": str(limit), "start": str(start_ns), "end": str(now_ns)}
-    r = await _loki.get("/loki/api/v1/query_range", params=params)
-    if r.status_code != 200:
-        raise HTTPException(r.status_code, r.text)
-    streams = r.json().get("data", {}).get("result", [])
-    out = []
-    for s in streams:
-        for (ts, line) in s.get("values", []):
-            out.append({"ts": ts, "line": line, "labels": s.get("stream", {})})
-    return {"items": out}
+def get_logs(
+    ns: str = Query(..., alias="ns"),
+    app: str = Query(..., alias="app"),
+    q: str | None = Query(None, alias="q"),
+    limit: int = Query(200),
+    since: int = Query(900),  # آخر 15 دقيقة افتراضيًا
+):
+    now = time.time()
+    start_ns = int((now - since) * 1e9)
+    end_ns = int(now * 1e9)
+
+    # فلتر المحتوى (إن وجد)
+    content = f' |~ "{q}"' if q else ""
+
+    # الاستعلامين: بالـ app وبـ pod regex
+    sel_app = f'{{namespace="{ns}", app="{app}"}}'
+    sel_pod = f'{{namespace="{ns}", pod=~"^{app}.*"}}'
+
+    # اتّحاد (OR) بين التعبيرين، ونفس فلتر المحتوى يطبق على الاثنين
+    query = f'({sel_app}{content}) or ({sel_pod}{content})'
+
+    params = {
+        "query": query,
+        "start": str(start_ns),
+        "end": str(end_ns),
+        "limit": str(limit),
+        "direction": "backward",
+    }
+    r = requests.get(f"{LOKI_URL}/loki/api/v1/query_range", params=params, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+
+    items = []
+    for stream in data.get("data", {}).get("result", []):
+        labels = stream.get("stream", {})
+        for ts, line in stream.get("values", []):
+            items.append({
+                "ts": ts,          # نانو ثانية من Loki
+                "line": line,
+                "labels": labels,
+            })
+
+    # رجّع نفس الشكل اللي تتوقعه الواجهة
+    return JSONResponse({"items": items})
 
 @router.get("/events")
 async def k8s_events(ns: str, app: str, since: Optional[int]=3600):
