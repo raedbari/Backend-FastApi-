@@ -168,85 +168,111 @@ from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 
-LOKI_URL = os.environ.get("LOKI_URL", "").rstrip("/")
+LOKI_URL = os.getenv("LOKI_URL", "http://loki.monitoring.svc:3100")
+
+def _nanos(ts_sec: int) -> int:
+    return ts_sec * 1_000_000_000
 
 @router.get("/logs")
 def get_logs(
     ns: str = Query(..., alias="ns"),
     app: str = Query(..., alias="app"),
-    q: str | None = Query(None, alias="q"),
-    limit: int = Query(200),
-    since: int = Query(900),  # آخر 15 دقيقة افتراضيًا
+    q: str | None = Query(None),
+    limit: int = Query(200)
 ):
-    now = time.time()
-    start_ns = int((now - since) * 1e9)
-    end_ns = int(now * 1e9)
+    now = int(time.time())
+    start_ns = _nanos(now - 900)     # آخر 15 دقيقة
+    end_ns   = _nanos(now)
 
-    # فلتر المحتوى (إن وجد)
-    content = f' |~ "{q}"' if q else ""
+    # الاستعلام الأساسي: حسب الـlabels
+    primary_query = f'({{namespace="{ns}", app="{app}"}}) or ({{namespace="{ns}", pod=~"^{app}.*"}})'
 
-    # الاستعلامين: بالـ app وبـ pod regex
-    sel_app = f'{{namespace="{ns}", app="{app}"}}'
-    sel_pod = f'{{namespace="{ns}", pod=~"^{app}.*"}}'
-
-    # اتّحاد (OR) بين التعبيرين، ونفس فلتر المحتوى يطبق على الاثنين
-    query = f'({sel_app}{content}) or ({sel_pod}{content})'
+    # لو فيه q من المستخدم، خليها فلتر نصّي
+    # (ممكن لاحقًا نضيف |= أو |~ حسب الحاجة)
+    if q:
+        primary_query += f' |= "{q}"'
 
     params = {
-        "query": query,
+        "query": primary_query,
         "start": str(start_ns),
         "end": str(end_ns),
         "limit": str(limit),
         "direction": "backward",
     }
-    r = requests.get(f"{LOKI_URL}/loki/api/v1/query_range", params=params, timeout=15)
-    r.raise_for_status()
-    data = r.json()
 
-    items = []
-    for stream in data.get("data", {}).get("result", []):
-        labels = stream.get("stream", {})
-        for ts, line in stream.get("values", []):
-            items.append({
-                "ts": ts,          # نانو ثانية من Loki
-                "line": line,
-                "labels": labels,
-            })
+    try:
+        r = requests.get(f"{LOKI_URL}/loki/api/v1/query_range", params=params, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            items = []
+            # رجّع أسطر اللوج منresult type streams
+            for stream in data.get("data", {}).get("result", []):
+                labels = stream.get("stream", {})
+                for ts, line in stream.get("values", []):
+                    items.append({"ts": ts, "line": line, "labels": labels})
+            return {"items": items}
 
-    # رجّع نفس الشكل اللي تتوقعه الواجهة
-    return JSONResponse({"items": items})
+        # لو رجع 400 أو غيره: جرّب fallback أبسط
+        # fallback: بحث نصّي داخل namespace
+        fallback_query = f'{{namespace="{ns}"}} |= "{app}"'
+        if q:
+            fallback_query += f' |= "{q}"'
 
-@router.get("/events")
+        fb_params = {
+            "query": fallback_query,
+            "start": str(start_ns),
+            "end": str(end_ns),
+            "limit": str(limit),
+            "direction": "backward",
+        }
+        r2 = requests.get(f"{LOKI_URL}/loki/api/v1/query_range", params=fb_params, timeout=10)
+        if r2.status_code == 200:
+            data = r2.json()
+            items = []
+            for stream in data.get("data", {}).get("result", []):
+                labels = stream.get("stream", {})
+                for ts, line in stream.get("values", []):
+                    items.append({"ts": ts, "line": line, "labels": labels})
+            return {"items": items}
+
+        # لو فشل الاثنين، أرجع رسالة Loki بدل 500 غامضة
+        try:
+            msg = r.json().get("error", r.text)
+        except Exception:
+            msg = r.text
+        raise HTTPException(status_code=502, detail=f"Loki error: {msg}")
+
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Loki request failed: {e}")
+
 def k8s_events(
     ns: str = Query(..., alias="ns"),
     app: str = Query(..., alias="app"),
     since: int = Query(3600),
 ):
-    ev_api = client.EventsV1Api()              # <--- هنا التغيير المهم
-    evs = ev_api.list_namespaced_event(ns)
+    # رجعنا لِـ CoreV1Api لأن EventsV1Api يلزم event_time != None
+    v1 = client.CoreV1Api()
+    evs = v1.list_namespaced_event(ns)
 
     items = []
     for e in evs.items:
-        # EventsV1: عنده e.regarding
-        obj = getattr(e, "regarding", None)
+        obj = getattr(e, "involved_object", None)
         name = getattr(obj, "name", "") if obj else ""
         if app and app not in (name or ""):
             continue
 
-        # اختَر أنسب خانة زمنية متوفرة
-        ts = getattr(e, "event_time", None) or \
-             getattr(e, "deprecated_last_timestamp", None) or \
-             getattr(e.metadata, "creation_timestamp", None)
+        # اختَر زمن مناسب متوفر
+        ts = getattr(e, "last_timestamp", None) or getattr(e, "first_timestamp", None) or getattr(e.metadata, "creation_timestamp", None)
 
         items.append({
-            "type":   getattr(e, "type", None),
+            "type": getattr(e, "type", None),
             "reason": getattr(e, "reason", None),
-            "message": getattr(e, "note", None) or getattr(e, "message", None),
+            "message": getattr(e, "message", None),
             "ts": str(ts) if ts else None,
             "regarding": {
-                "kind":  getattr(obj, "kind", None) if obj else None,
-                "name":  name,
-                "uid":   getattr(obj, "uid", None) if obj else None,
+                "kind": getattr(obj, "kind", None) if obj else None,
+                "name": name,
+                "uid": getattr(obj, "uid", None) if obj else None,
             }
         })
 
