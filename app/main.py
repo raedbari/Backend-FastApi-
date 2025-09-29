@@ -1,6 +1,6 @@
 # app/main.py
 
-from fastapi import FastAPI, Query   # <-- خلي Query هنا
+from fastapi import FastAPI, Query ,HTTPException  # <-- خلي Query هنا
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
@@ -26,7 +26,7 @@ app = FastAPI(
     version="0.1.0",
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
 )
-
+app.include_router(monitor_router)
 # -------------------------------------------------------------------
 # Routers (disabled login)
 # -------------------------------------------------------------------
@@ -147,6 +147,3 @@ async def bluegreen_rollback(req: NameNS):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-
-app = FastAPI()
-app.include_router(monitor_router)
