@@ -12,6 +12,15 @@ ALLOWED_NS = set([s.strip() for s in os.getenv("ALLOWED_NAMESPACES","").split(",
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 
+def _load_k8s():
+    """Load in-cluster config (or kubeconfig if running locally)."""
+    try:
+        config.load_incluster_config()
+    except Exception:
+        config.load_kube_config()
+    return client.AppsV1Api(), client.CoreV1Api()
+
+
 # ---- Utils ----
 def ns_guard(ns: str):
     if ALLOWED_NS and ns not in ALLOWED_NS:
@@ -27,6 +36,34 @@ def promq(expr: str, rng: str = "5m"):
     step = "15s"
     return {"query": expr, "start": start, "end": now, "step": step}
 
+def _ns_to_iso(nanos: str) -> str:
+    """Convert Loki nanoseconds string to ISO8601."""
+    # Loki returns a string like "1759129248269352048"
+    try:
+        ts = int(nanos)
+        return datetime.fromtimestamp(ts / 1_000_000_000, tz=timezone.utc).isoformat()
+    except Exception:
+        return ""
+
+
+def _safe_regex(s: str) -> str:
+    """Escape user strings for regex usage in Loki filters."""
+    return re.escape(s)
+
+
+def _loki_query_range(query: str, start_ns: int, end_ns: int, limit: int = 200, direction: str = "backward") -> Dict[str, Any]:
+    url = f"{LOKI_URL}/loki/api/v1/query_range"
+    params = {
+        "query": query,
+        "start": str(start_ns),
+        "end": str(end_ns),
+        "limit": str(limit),
+        "direction": direction,
+    }
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()  # surface 4xx/5xx to caller
+    return r.json()
+    
 # ---- Schemas ----
 class AppItem(BaseModel):
     namespace: str

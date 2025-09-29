@@ -27,11 +27,7 @@ app = FastAPI(
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
 )
 app.include_router(monitor_router)
-# -------------------------------------------------------------------
-# Routers (disabled login)
-# -------------------------------------------------------------------
-# from app.monitor.routes import r as monitor_router
-# app.include_router(monitor_router)  # /api/monitor/...
+
 
 # -------------------------------------------------------------------
 # CORS configuration
