@@ -1,5 +1,5 @@
 # app/monitor.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query ,Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -254,3 +254,95 @@ def k8s_events(
         })
 
     return JSONResponse({"items": items})
+
+
+# ===== Compatibility: /apps/status + /apps/scale (لواجهة قديمة) =====
+
+
+# نفس عملاء K8s المعرّفين أعلى الملف: k8s_core, k8s_apps
+
+class _StatusItem(BaseModel):
+    namespace: Optional[str] = None
+    name: str
+    image: str
+    desired: int
+    current: int
+    available: int
+    updated: int
+    conditions: Dict[str, str] = {}
+    svc_selector: Optional[Dict[str, str]] = None
+    preview_ready: Optional[bool] = None
+
+class _StatusResponse(BaseModel):
+    items: List[_StatusItem]
+
+class _ScaleReq(BaseModel):
+    name: str
+    replicas: int
+    namespace: Optional[str] = "default"
+
+def _img_of(dep: client.V1Deployment) -> str:
+    try:
+        return dep.spec.template.spec.containers[0].image or ""
+    except Exception:
+        return ""
+
+def _conds(dep: client.V1Deployment) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for c in (dep.status.conditions or []):
+        if getattr(c, "type", None) and getattr(c, "status", None):
+            out[c.type] = c.status
+    return out
+
+def _svc_sel(ns: str, name: str) -> Optional[Dict[str, str]]:
+    try:
+        svc = k8s_core.read_namespaced_service(name=name, namespace=ns)
+        return svc.spec.selector or None
+    except Exception:
+        return None
+
+# GET /apps/status  -> تستعمله صفحة Apps Status الحالية
+@router.get("/apps/status", response_model=_StatusResponse)
+def apps_status(namespace: Optional[str] = None):
+    if not k8s_apps:
+        raise HTTPException(500, "k8s client not initialized")
+
+    dps = (k8s_apps.list_namespaced_deployment(namespace)
+           if namespace else k8s_apps.list_deployment_for_all_namespaces())
+
+    items: List[_StatusItem] = []
+    for d in dps.items:
+        ns = d.metadata.namespace or "default"
+        items.append(_StatusItem(
+            namespace=ns,
+            name=d.metadata.name,
+            image=_img_of(d),
+            desired=int(d.spec.replicas or 0),
+            current=int(d.status.replicas or 0),
+            available=int(d.status.available_replicas or 0),
+            updated=int(d.status.updated_replicas or 0),
+            conditions=_conds(d),
+            svc_selector=_svc_sel(ns, d.metadata.name),
+            preview_ready=None,
+        ))
+    return _StatusResponse(items=items)
+
+# POST /apps/scale  -> زر الـScale في الصفحة
+@router.post("/apps/scale")
+def apps_scale(req: _ScaleReq = Body(...)):
+    if not k8s_apps:
+        raise HTTPException(500, "k8s client not initialized")
+    if req.replicas < 0:
+        raise HTTPException(400, "replicas must be >= 0")
+
+    try:
+        scale = k8s_apps.read_namespaced_deployment_scale(
+            name=req.name, namespace=req.namespace
+        )
+        scale.spec.replicas = req.replicas
+        k8s_apps.replace_namespaced_deployment_scale(
+            name=req.name, namespace=req.namespace, body=scale
+        )
+        return {"ok": True, "name": req.name, "namespace": req.namespace, "replicas": req.replicas}
+    except client.exceptions.ApiException as e:
+        raise HTTPException(status_code=e.status or 500, detail=e.body or str(e))
