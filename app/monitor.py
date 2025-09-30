@@ -1,53 +1,34 @@
+
 # app/monitor.py
-from fastapi import APIRouter, HTTPException, Query ,Body
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-
-import os, re, time, requests, httpx
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
-
+import os, re, time
+import httpx
+from typing import List, Optional
 from kubernetes import client, config
 
-# -------- Config --------
-PROM_URL  = os.environ["PROM_URL"].rstrip("/")
-LOKI_URL  = os.environ.get("LOKI_URL", "http://loki.monitoring.svc:3100").rstrip("/")
-ALLOWED_NS = {s.strip() for s in os.getenv("ALLOWED_NAMESPACES", "").split(",") if s.strip()}
+PROM_URL = os.environ["PROM_URL"].rstrip("/")
+LOKI_URL = os.environ["LOKI_URL"].rstrip("/")
+ALLOWED_NS = set([s.strip() for s in os.getenv("ALLOWED_NAMESPACES","").split(",") if s.strip()])
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
 
-# -------- K8s init --------
-try:
-    try:
-        config.load_incluster_config()
-    except Exception:
-        config.load_kube_config()
-    k8s_core = client.CoreV1Api()
-    k8s_apps = client.AppsV1Api()
-except Exception:
-    k8s_core = k8s_apps = None
-
-# -------- Helpers --------
-_prom = httpx.AsyncClient(base_url=PROM_URL, timeout=10)
-
+# ---- Utils ----
 def ns_guard(ns: str):
     if ALLOWED_NS and ns not in ALLOWED_NS:
         raise HTTPException(status_code=403, detail="namespace not allowed")
 
-def _safe_regex(s: str) -> str:
-    return re.escape(s)
+_prom = httpx.AsyncClient(base_url=PROM_URL, timeout=10)
+_loki = httpx.AsyncClient(base_url=LOKI_URL, timeout=30)
 
-def _ns_to_iso(nanos: str) -> str:
-    try:
-        ts = int(nanos)
-        return datetime.fromtimestamp(ts / 1_000_000_000, tz=timezone.utc).isoformat()
-    except Exception:
-        return ""
+def promq(expr: str, rng: str = "5m"):
+    # range query window used by /query_range endpoints
+    now = int(time.time())
+    start = now - 60*5 if rng.endswith("m") else now - 900
+    step = "15s"
+    return {"query": expr, "start": start, "end": now, "step": step}
 
-def _nanos(ts_sec: int) -> int:
-    return ts_sec * 1_000_000_000
-
-# -------- Schemas --------
+# ---- Schemas ----
 class AppItem(BaseModel):
     namespace: str
     app: str
@@ -71,23 +52,41 @@ class Overview(BaseModel):
     mem_bytes: List[dict]
     http: Optional[dict] = None
 
-# -------- Endpoints --------
+# ---- K8s init ----
+try:
+    # in-cluster first, fallback to kubeconfig for local dev
+    try:
+        config.load_incluster_config()
+    except Exception:
+        config.load_kube_config()
+    k8s = client.CoreV1Api()
+    apps = client.AppsV1Api()
+    events = client.EventsV1Api()
+except Exception as e:
+    k8s = apps = events = None
+
+# ---- Endpoints ----
+
+
+
 @router.get("/apps", response_model=List[AppItem])
 async def list_apps():
-    if not k8s_apps:
-        raise HTTPException(500, "k8s client not initialized")
+    if not apps: raise HTTPException(500, "k8s client not initialized")
     out: List[AppItem] = []
-    dps = k8s_apps.list_deployment_for_all_namespaces()
-    for d in dps.items:
+    dps = apps.list_deployment_for_all_namespaces()
+    for d in dps.items:    
         ns = d.metadata.namespace
-        if ALLOWED_NS and ns not in ALLOWED_NS:
-            continue
+
+
         labels = d.metadata.labels or {}
         app = labels.get("app") or d.metadata.name
-        img, tag = "", ""
+        if ALLOWED_NS and ns not in ALLOWED_NS:
+            continue
+        img = ""
+        tag = ""
         try:
             c = d.spec.template.spec.containers[0]
-            img = c.image or ""
+            img = c.image
             if ":" in img:
                 tag = img.split(":")[-1]
         except Exception:
@@ -98,17 +97,17 @@ async def list_apps():
             image=img,
             tag=tag,
             replicas_desired=d.spec.replicas or 0,
-            replicas_available=(d.status.available_replicas or 0),
+            replicas_available=(d.status.available_replicas or 0)
         ))
     return out
 
 @router.get("/pods", response_model=List[PodItem])
 async def pods(ns: str = Query(..., alias="ns"), app: str = Query(..., alias="app")):
     ns_guard(ns)
-    if not k8s_core:
-        raise HTTPException(500, "k8s client not initialized")
-    pls = k8s_core.list_namespaced_pod(namespace=ns, label_selector=f"app={app}")
-    out: List[PodItem] = []
+    if not k8s: raise HTTPException(500, "k8s client not initialized")
+    lbl = f"app={app}"
+    pls = k8s.list_namespaced_pod(namespace=ns, label_selector=lbl)
+    out = []
     now = time.time()
     for p in pls.items:
         st = p.status
@@ -116,26 +115,21 @@ async def pods(ns: str = Query(..., alias="ns"), app: str = Query(..., alias="ap
         ready = bool(cs and cs.ready)
         image = cs.image if cs else ""
         age = int(now - p.metadata.creation_timestamp.timestamp())
-        out.append(PodItem(
-            name=p.metadata.name,
-            phase=st.phase or "Unknown",
-            ready=ready,
-            age_seconds=age,
-            image=image
-        ))
+        out.append(PodItem(name=p.metadata.name, phase=st.phase or "Unknown",
+                           ready=ready, age_seconds=age, image=image))
     return out
 
 @router.get("/overview", response_model=Overview)
 async def overview(ns: str, app: str):
     ns_guard(ns)
 
-    # replicas
+    # Replicas from kube-state-metrics
     q_des = f'kube_deployment_status_replicas{{namespace="{ns}",deployment="{app}"}}'
     q_av  = f'kube_deployment_status_replicas_available{{namespace="{ns}",deployment="{app}"}}'
 
-    # cpu / memory
-    q_cpu = f'sum by(pod) (rate(container_cpu_usage_seconds_total{{namespace="{ns}", pod=~"{_safe_regex(app)}.*", image!=""}}[5m]))'
-    q_mem = f'max by(pod) (container_memory_working_set_bytes{{namespace="{ns}", pod=~"{_safe_regex(app)}.*", image!=""}})'
+    # CPU / Memory per pod
+    q_cpu = f'sum by(pod) (rate(container_cpu_usage_seconds_total{{namespace="{ns}", pod=~"{app}.*", image!=""}}[5m]))'
+    q_mem = f'max by(pod) (container_memory_working_set_bytes{{namespace="{ns}", pod=~"{app}.*", image!=""}})'
 
     async with httpx.AsyncClient(timeout=10) as s:
         r1 = await s.get(f"{PROM_URL}/api/v1/query", params={"query": q_des})
@@ -143,24 +137,21 @@ async def overview(ns: str, app: str):
         r3 = await s.get(f"{PROM_URL}/api/v1/query", params={"query": q_cpu})
         r4 = await s.get(f"{PROM_URL}/api/v1/query", params={"query": q_mem})
 
-    def one(res):
-        try:
-            return int(float(res.json()["data"]["result"][0]["value"][1]))
-        except Exception:
-            return 0
+    def one(res): 
+        try: return int(float(res.json()["data"]["result"][0]["value"][1]))
+        except: return 0
 
     def vec(res, key):
-        out_local=[]
-        for it in res.json().get("data", {}).get("result", []):
-            out_local.append({"pod": it["metric"].get("pod",""), key: float(it["value"][1])})
-        return out_local
+        out=[]
+        for it in res.json()["data"]["result"]:
+            out.append({"pod": it["metric"].get("pod",""), key: float(it["value"][1])})
+        return out
 
     replicas = {"desired": one(r1), "available": one(r2)}
-    cpu = [{"pod": v["pod"], "mcores": round(v.get("value", v.get("mcores",0))*1000, 1)}
-           for v in [{"pod": x["pod"], "value": x["value"]} for x in vec(r3, "value")]]
+    cpu = [{"pod": v["pod"], "mcores": round(v.get("value", v.get("mcores",0))*1000, 1)} 
+           for v in [{"pod": x["pod"], "value": x["value"]} for x in vec(r3, "value")] ]
     mem = vec(r4, "bytes")
-
-    # optional http metrics
+    # Optional HTTP metrics if app exposes them
     http = None
     q_err = f'sum(rate(http_requests_total{{namespace="{ns}", app="{app}", status=~"5.."}}[5m]))'
     q_lat = f'histogram_quantile(0.95, sum by(le) (rate(http_request_duration_seconds_bucket{{namespace="{ns}", app="{app}"}}[5m])))'
@@ -176,173 +167,42 @@ async def overview(ns: str, app: str):
     return Overview(namespace=ns, app=app, replicas=replicas, cpu_mcores=cpu, mem_bytes=mem, http=http)
 
 @router.get("/logs")
-def get_logs(
-    ns: str = Query(..., alias="ns"),
-    app: str = Query(..., alias="app"),
-    q: Optional[str] = Query(None),
-    limit: int = Query(200),
-):
-    now = int(time.time())
-    start_ns, end_ns = _nanos(now - 900), _nanos(now)
-
-    query = f'({{namespace="{ns}", app="{app}"}}) or ({{namespace="{ns}", pod=~"^{_safe_regex(app)}.*"}})'
+async def logs(ns: str, app: str, q: Optional[str]=None, since: Optional[int]=900, limit: int=500):
+    ns_guard(ns)
+    # Loki instant query over recent window
+    now_ns = int(time.time()*1e9)
+    start_ns = now_ns - since*1_000_000_000
+    sel = f'{{namespace="{ns}",app="{app}"}}'
     if q:
-        query += f' |= "{q}"'
-
-    params = {"query": query, "start": str(start_ns), "end": str(end_ns),
-              "limit": str(limit), "direction": "backward"}
-
-    try:
-        r = requests.get(f"{LOKI_URL}/loki/api/v1/query_range", params=params, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            items = [{"ts": ts, "line": line, "labels": stream.get("stream", {})}
-                     for stream in data.get("data", {}).get("result", [])
-                     for ts, line in stream.get("values", [])]
-            return {"items": items}
-
-        # fallback النصّي
-        fb = f'{{namespace="{ns}"}} |= "{app}"' + (f' |= "{q}"' if q else "")
-        r2 = requests.get(f"{LOKI_URL}/loki/api/v1/query_range",
-                          params={**params, "query": fb}, timeout=10)
-        if r2.status_code == 200:
-            data = r2.json()
-            items = [{"ts": ts, "line": line, "labels": stream.get("stream", {})}
-                     for stream in data.get("data", {}).get("result", [])
-                     for ts, line in stream.get("values", [])]
-            return {"items": items}
-
-        try:
-            msg = r.json().get("error", r.text)
-        except Exception:
-            msg = r.text
-        raise HTTPException(status_code=502, detail=f"Loki error: {msg}")
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Loki request failed: {e}")
+        sel += f' |= `{q}`'
+    params = {"query": sel, "limit": str(limit), "start": str(start_ns), "end": str(now_ns)}
+    r = await _loki.get("/loki/api/v1/query_range", params=params)
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, r.text)
+    streams = r.json().get("data", {}).get("result", [])
+    out = []
+    for s in streams:
+        for (ts, line) in s.get("values", []):
+            out.append({"ts": ts, "line": line, "labels": s.get("stream", {})})
+    return {"items": out}
 
 @router.get("/events")
-def k8s_events(
-    ns: str = Query(..., alias="ns"),
-    app: str = Query(..., alias="app"),
-    since: int = Query(3600),
-):
-    if not k8s_core:
-        raise HTTPException(500, "k8s client not initialized")
-
-    evs = k8s_core.list_namespaced_event(ns)
-    items = []
+async def k8s_events(ns: str, app: str, since: Optional[int]=3600):
+    ns_guard(ns)
+    if not k8s: raise HTTPException(500, "k8s client not initialized")
+    # fieldSelector by involvedObject labels is limited; filter client-side
+    evs = k8s.list_namespaced_event(ns)
+    cutoff = time.time() - since
+    out=[]
     for e in evs.items:
-        obj = getattr(e, "involved_object", None)
-        name = getattr(obj, "name", "") if obj else ""
-        if app and app not in (name or ""):
+        if e.event_time and e.event_time.timestamp() < cutoff: 
             continue
-
-        ts = (getattr(e, "last_timestamp", None)
-              or getattr(e, "first_timestamp", None)
-              or getattr(e.metadata, "creation_timestamp", None))
-
-        items.append({
-            "type": getattr(e, "type", None),
-            "reason": getattr(e, "reason", None),
-            "message": getattr(e, "message", None),
-            "ts": str(ts) if ts else None,
-            "regarding": {
-                "kind": getattr(obj, "kind", None) if obj else None,
-                "name": name,
-                "uid": getattr(obj, "uid", None) if obj else None,
-            }
-        })
-
-    return JSONResponse({"items": items})
-
-
-# ===== Compatibility: /apps/status + /apps/scale (لواجهة قديمة) =====
-
-
-# نفس عملاء K8s المعرّفين أعلى الملف: k8s_core, k8s_apps
-
-class _StatusItem(BaseModel):
-    namespace: Optional[str] = None
-    name: str
-    image: str
-    desired: int
-    current: int
-    available: int
-    updated: int
-    conditions: Dict[str, str] = {}
-    svc_selector: Optional[Dict[str, str]] = None
-    preview_ready: Optional[bool] = None
-
-class _StatusResponse(BaseModel):
-    items: List[_StatusItem]
-
-class _ScaleReq(BaseModel):
-    name: str
-    replicas: int
-    namespace: Optional[str] = "default"
-
-def _img_of(dep: client.V1Deployment) -> str:
-    try:
-        return dep.spec.template.spec.containers[0].image or ""
-    except Exception:
-        return ""
-
-def _conds(dep: client.V1Deployment) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for c in (dep.status.conditions or []):
-        if getattr(c, "type", None) and getattr(c, "status", None):
-            out[c.type] = c.status
-    return out
-
-def _svc_sel(ns: str, name: str) -> Optional[Dict[str, str]]:
-    try:
-        svc = k8s_core.read_namespaced_service(name=name, namespace=ns)
-        return svc.spec.selector or None
-    except Exception:
-        return None
-
-# GET /apps/status  -> تستعمله صفحة Apps Status الحالية
-@router.get("/apps/status", response_model=_StatusResponse)
-def apps_status(namespace: Optional[str] = None):
-    if not k8s_apps:
-        raise HTTPException(500, "k8s client not initialized")
-
-    dps = (k8s_apps.list_namespaced_deployment(namespace)
-           if namespace else k8s_apps.list_deployment_for_all_namespaces())
-
-    items: List[_StatusItem] = []
-    for d in dps.items:
-        ns = d.metadata.namespace or "default"
-        items.append(_StatusItem(
-            namespace=ns,
-            name=d.metadata.name,
-            image=_img_of(d),
-            desired=int(d.spec.replicas or 0),
-            current=int(d.status.replicas or 0),
-            available=int(d.status.available_replicas or 0),
-            updated=int(d.status.updated_replicas or 0),
-            conditions=_conds(d),
-            svc_selector=_svc_sel(ns, d.metadata.name),
-            preview_ready=None,
-        ))
-    return _StatusResponse(items=items)
-
-# POST /apps/scale  -> زر الـScale في الصفحة
-@router.post("/apps/scale")
-def apps_scale(req: _ScaleReq = Body(...)):
-    if not k8s_apps:
-        raise HTTPException(500, "k8s client not initialized")
-    if req.replicas < 0:
-        raise HTTPException(400, "replicas must be >= 0")
-
-    try:
-        scale = k8s_apps.read_namespaced_deployment_scale(
-            name=req.name, namespace=req.namespace
-        )
-        scale.spec.replicas = req.replicas
-        k8s_apps.replace_namespaced_deployment_scale(
-            name=req.name, namespace=req.namespace, body=scale
-        )
-        return {"ok": True, "name": req.name, "namespace": req.namespace, "replicas": req.replicas}
-    except client.exceptions.ApiException as e:
-        raise HTTPException(status_code=e.status or 500, detail=e.body or str(e))
+        if e.regarding and e.regarding.namespace == ns and app in (e.regarding.name or ""):
+            out.append({
+                "type": e.type,
+                "reason": e.reason,
+                "note": e.note,
+                "at": (e.event_time or e.last_timestamp).isoformat() if (e.event_time or e.last_timestamp) else None,
+                "obj": {"kind": e.regarding.kind, "name": e.regarding.name}
+            })
+    return {"items": out} 
