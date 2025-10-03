@@ -143,3 +143,19 @@ async def bluegreen_rollback(req: NameNS):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+
+router = APIRouter(prefix="/monitor", tags=["monitor"])
+
+
+@router.get("/grafana_url")
+def grafana_url(ns: str = Query(..., alias="ns"), app: str = Query(..., alias="app")):
+    """
+    يرجع رابط الداشبورد في Grafana مع المتغيرات.
+    """
+    try:
+        url = build_dashboard_url(ns, app)
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+        
