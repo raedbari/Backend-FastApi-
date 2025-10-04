@@ -176,3 +176,11 @@ def grafana_url(
 
 
 app.include_router(monitor_router)
+
+@app.get("/monitor/apps", response_model=StatusResponse)
+async def legacy_apps_status(
+    name: str | None = Query(default=None),
+    namespace: str | None = Query(default=None)
+):
+    # أعِد استخدام نفس منطق /apps/status
+    return await apps_status(name=name, namespace=namespace)
