@@ -1,6 +1,6 @@
 # app/main.py
 
-from fastapi import FastAPI, Query ,HTTPException  # <-- خلي Query هنا
+from fastapi import FastAPI, Query, HTTPException, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
@@ -11,7 +11,10 @@ from .k8s_ops import (
 )
 from pydantic import BaseModel
 
-from app.monitor import router as monitor_router
+# نستخدم فقط دالة بناء رابط الجرافانا من نفس الباكدند (إن كانت لديك هنا)
+# إن كانت موجودة في app/monitor.py:
+from .monitor import build_dashboard_url
+
 
 class NameNS(BaseModel):
     name: str
@@ -26,7 +29,6 @@ app = FastAPI(
     version="0.1.0",
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
 )
-app.include_router(monitor_router)
 
 
 # -------------------------------------------------------------------
@@ -44,11 +46,10 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,  # set True فقط إذا عندك cookies/sessions
+    allow_credentials=True,  # اجعلها True فقط إذا عندك cookies/sessions
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 # -------------------------------------------------------------------
@@ -59,10 +60,12 @@ async def healthz():
     """Simple liveness/readiness endpoint."""
     return {"status": "ok"}
 
+
 @app.get("/")
 async def root():
     """Welcome hint."""
     return {"message": "Hello! API is running. Open /docs to try it out."}
+
 
 # Temporary debug route to validate AppSpec schema via Swagger UI
 @app.post("/_debug/validate-appspec")
@@ -73,6 +76,7 @@ async def validate_appspec(spec: AppSpec):
         "received": spec.model_dump(),
         "full_image": spec.full_image,
     }
+
 
 # -------------------------------------------------------------------
 # Platform routes
@@ -88,20 +92,21 @@ async def deploy_app(spec: AppSpec):
         # Convert unexpected backend errors to an HTTP error.
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+
 @app.post("/apps/scale")
 async def scale_app(req: ScaleRequest):
     """Patch the Scale subresource of a Deployment."""
     try:
-        # كان: result = scale(req.name, req.replicas)
         result = scale(req.name, req.replicas, namespace=req.namespace)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+
 @app.get("/apps/status", response_model=StatusResponse)
 async def apps_status(
     name: str | None = Query(default=None),
-    namespace: str | None = Query(default=None)
+    namespace: str | None = Query(default=None),
 ):
     try:
         return list_status(name=name, namespace=namespace)
@@ -109,12 +114,10 @@ async def apps_status(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-
 @app.post("/apps/bluegreen/prepare")
 async def bluegreen_prepare(spec: AppSpec):
-  
     try:
-        # نتأكد أن الـService موجودة وتختار always role=activ
+        # نتأكد أن الـService موجودة وتختار دائمًا role=active
         _ = upsert_service(spec)
         res = bg_prepare(spec)
         return {"ok": True, **res}
@@ -124,9 +127,9 @@ async def bluegreen_prepare(spec: AppSpec):
 
 @app.post("/apps/bluegreen/promote")
 async def bluegreen_promote(req: NameNS):
-   
     try:
-        res = bg_promote(name=req.name, namespace=req.namespace or os.getenv("DEFAULT_NAMESPACE", "default"))
+        ns = req.namespace or os.getenv("DEFAULT_NAMESPACE", "default")
+        res = bg_promote(name=req.name, namespace=ns)
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -134,28 +137,34 @@ async def bluegreen_promote(req: NameNS):
 
 @app.post("/apps/bluegreen/rollback")
 async def bluegreen_rollback(req: NameNS):
-    """
-    رجوع فوري: يعيد الـidle القديم ليصبح active، والحالي يُحوّل إلى preview.
-    """
+    """يعيد الـ idle القديم ليصبح active والحالي يتحول preview."""
     try:
-        res = bg_rollback(name=req.name, namespace=req.namespace or os.getenv("DEFAULT_NAMESPACE", "default"))
+        ns = req.namespace or os.getenv("DEFAULT_NAMESPACE", "default")
+        res = bg_rollback(name=req.name, namespace=ns)
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-router = APIRouter(prefix="/monitor", tags=["monitor"])
+# -------------------------------------------------------------------
+# Monitor (Grafana URL only) — بدون أي صفحة مراقبة قديمة
+# -------------------------------------------------------------------
+monitor_router = APIRouter(prefix="/monitor", tags=["monitor"])
 
 
-@router.get("/grafana_url")
-def grafana_url(ns: str = Query(..., alias="ns"), app: str = Query(..., alias="app")):
+@monitor_router.get("/grafana_url")
+def grafana_url(
+    ns: str = Query(..., alias="ns"),
+    app_name: str = Query(..., alias="app"),
+):
     """
-    يرجع رابط الداشبورد في Grafana مع المتغيرات.
+    يرجّع رابط الداشبورد في Grafana مع المتغيرات.
     """
     try:
-        url = build_dashboard_url(ns, app)
+        url = build_dashboard_url(ns, app_name)
         return {"url": url}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
-        
+
+app.include_router(monitor_router)
