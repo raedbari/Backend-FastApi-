@@ -221,34 +221,50 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
+    # احصل على قائمة الـ Deployments
     if name:
-        deployments = [apps.read_namespaced_deployment(name=name, namespace=ns)]
+        try:
+            d = apps.read_namespaced_deployment(name=name, namespace=ns)
+            deployments = [d]
+        except Exception as e:
+            # رجّع قائمة فارغة بدلاً من كسر الـ API
+            return StatusResponse(items=[])
     else:
         deployments = apps.list_namespaced_deployment(
-            namespace=ns, label_selector="managed-by=cloud-devops-platform"
+            namespace=ns,
+            label_selector="managed-by=cloud-devops-platform",
         ).items
 
-        items: List[StatusItem] = []
+    items: List[StatusItem] = []
+
     for d in deployments:
         spec = d.spec or client.V1DeploymentSpec()
         status = d.status or client.V1DeploymentStatus()
 
+        # الصورة
         image = ""
         try:
-            image = (spec.template.spec.containers or [])[0].image  
+            containers = (spec.template.spec.containers or [])
+            if containers:
+                image = containers[0].image or ""
         except Exception:
             pass
 
+        # الشروط
         conds = {c.type: c.status for c in (status.conditions or [])}
 
+        # اسم ونيمسبيس مرة واحدة
         d_name = d.metadata.name
-        ns = namespace or get_namespace()
+        d_labels = d.metadata.labels or {}
+        app_label = d_labels.get("app", d_name)
+
+        # الـ Service selector (اختياري)
         try:
-            svc_sel = get_service_selector(app_label, ns) 
+            svc_sel = get_service_selector(app_label, ns)
         except Exception:
             svc_sel = {}
 
-        app_label = (d.metadata.labels or {}).get("app", d_name)
+        # حالة الـ preview (اختياري)
         try:
             prev_ok = get_preview_ready(app_label, ns)
         except Exception:
@@ -263,8 +279,8 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
                 available=status.available_replicas or 0,
                 updated=status.updated_replicas or 0,
                 conditions=conds,
-                svc_selector=svc_sel,    
-                preview_ready=prev_ok,   
+                svc_selector=svc_sel,
+                preview_ready=prev_ok,
             )
         )
 
