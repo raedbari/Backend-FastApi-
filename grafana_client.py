@@ -2,28 +2,40 @@
 import os
 import httpx
 from typing import Optional, Dict, Any
+from urllib.parse import urlencode
 
 GRAFANA_URL = os.getenv("GRAFANA_URL", "https://rango-project.duckdns.org/grafana").rstrip("/")
-GRAFANA_TOKEN = os.getenv("GRAFANA_TOKEN")  # قد يكون None لو لم نُفعل الProvisioning
+GRAFANA_TOKEN = os.getenv("GRAFANA_TOKEN")
 
 _HEADERS = {"Content-Type": "application/json"}
 if GRAFANA_TOKEN:
     _HEADERS["Authorization"] = f"Bearer {GRAFANA_TOKEN}"
 
-# UID الافتراضي للدashboard الذي ستفتحه من الواجهة
+# UID الافتراضي + اسم الـ slug (اختياري)
 DEFAULT_DASH_UID = os.getenv("GRAFANA_DASH_UID", "app-observability")
+DEFAULT_DASH_SLUG = os.getenv("GRAFANA_DASH_SLUG", "app-observability")
 
-def build_dashboard_url(namespace: str, app: str,
-                        uid: str = DEFAULT_DASH_UID,
-                        time_from: str = "now-6h", time_to: str = "now") -> str:
+def build_dashboard_url(
+    namespace: str,
+    app: str,
+    uid: str = DEFAULT_DASH_UID,
+    time_from: str = "now-6h",
+    time_to: str = "now",
+) -> str:
     """
-    يبني رابط فتح الداشبورد مع تمرير المتغيرات:
-    var_namespace, var_app, والفترة الزمنية.
+    يبني رابط فتح الداشبورد ويمرّر متغيرات Grafana:
+    var-var_namespace, var-var_app, وفترة الزمن.
     """
-    return (
-        f"{GRAFANA_URL}/d/{uid}/app-observability"
-        f"?var_namespace={namespace}&var_app={app}&from={time_from}&to={time_to}"
+    qs = urlencode(
+        {
+            # لاحظ "var-" المضافة تلقائيًا من Grafana قبل اسم المتغيّر
+            "var-var_namespace": namespace,
+            "var-var_app": app,
+            "from": time_from,
+            "to": time_to,
+        }
     )
+    return f"{GRAFANA_URL}/d/{uid}/{DEFAULT_DASH_SLUG}?{qs}"
 
 # ------- (اختياري) دوال Provisioning عبر API -------
 # تستخدم التوكن لو أردت عمل Dashboard/Folder أو تحديثهما تلقائياً.
