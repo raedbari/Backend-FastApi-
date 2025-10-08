@@ -6,7 +6,7 @@ from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 import os
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, Integer, String, Index , DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Index , DateTime, ForeignKey , func, UniqueConstraint
 from datetime import datetime
 from sqlalchemy.orm import relationship
 
@@ -134,21 +134,31 @@ class Tenant(Base):
     __tablename__ = "tenants"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(200), unique=True, nullable=False)
-    k8s_namespace = Column(String(200), unique=True, nullable=False)
-    status = Column(String(50), default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    name = Column(String(200), nullable=False, unique=True)           # اسم العميل (شركة/مؤسسة)
+    k8s_namespace = Column(String(200), nullable=False, unique=True)  # النيمسبيس المخصص للعميل
+    status = Column(String(50), nullable=False, default="pending")    # pending / active / suspended
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
-    users = relationship("User", back_populates="tenant")
+    # علاقة مستخدمين ← عميل
+    users = relationship("User", back_populates="tenant", cascade="all,delete-orphan")
 
+    __table_args__ = (
+        Index("ix_tenants_name", "name"),
+    )
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(200), unique=True, nullable=False, index=True)
+    email = Column(String(200), nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), default="user")
-
+    role = Column(String(50), nullable=False, default="admin")        # admin / user
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
     tenant = relationship("Tenant", back_populates="users")
+
+    __table_args__ = (
+        UniqueConstraint("email", "tenant_id", name="uq_users_email_tenant"),
+        Index("ix_users_tenant_id", "tenant_id"),
+    )
