@@ -20,6 +20,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALG = "HS256"
 JWT_EXP_HOURS = int(os.getenv("JWT_EXP_HOURS", "12"))
 
+
 # ----------------------------
 # نماذج
 # ----------------------------
@@ -68,6 +69,8 @@ def create_access_token(*, sub: str, tid: int, ns: str, role: str) -> str:
 # ----------------------------
 # تسجيل الدخول
 # ----------------------------
+router = APIRouter(prefix="/auth", tags=["auth"])
+
 def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse]:
     user: Optional[User] = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.password_hash):
