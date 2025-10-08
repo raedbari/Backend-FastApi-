@@ -1,28 +1,60 @@
-# from sqlalchemy import create_engine
-# from sqlalchemy.orm import sessionmaker
-# import os
-# ENGINE = create_engine(os.getenv("DATABASE_URL"))
-# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=ENGINE)
-# def get_db():
-#     db = SessionLocal()
-#     try: yield db
+# app/db.py
+import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-#     finally: db.close()
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dev.db")
+
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    connect_args=connect_args,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
 
-# import os
-# from sqlalchemy import create_engine
-# from sqlalchemy.orm import sessionmaker
+def get_db():
+    """Dependency: للحصول على جلسة DB داخل الـ endpoints"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dev.db")
-# connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
-# engine = create_engine(DATABASE_URL, connect_args=connect_args)
-# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def init_db():
+    """
+    إنشاء الجداول + عمل Seed لعميل تجريبي (Demo) مع مستخدم admin.
+    تُستدعَى مرة عند الإقلاع (startup).
+    """
+    from .models import Tenant, User  # noqa
 
-# def get_db():
-#     db = SessionLocal()
-#     try:
-#         yield db
-#     finally:
-#         db.close()
+    # إنشاء الجداول إن لم تكن موجودة
+    Base.metadata.create_all(bind=engine)
+
+    # Seed
+    from sqlalchemy.orm import Session
+    from passlib.hash import bcrypt  # pip install passlib[bcrypt]
+
+    with Session(engine) as db:
+        tenant = db.query(Tenant).filter(Tenant.name == "Demo").first()
+        if not tenant:
+            tenant = Tenant(
+                name="Demo",
+                k8s_namespace="default",   # مؤقتًا للاختبار
+                status="active",
+            )
+            db.add(tenant)
+            db.flush()  # عشان نأخذ tenant.id بعد الإدراج مباشرة
+
+            admin_user = User(
+                email="demo@local",
+                password_hash=bcrypt.hash("demo123"),  # كلمة مرور بسيطة للاختبار
+                role="admin",
+                tenant_id=tenant.id,
+            )
+            db.add(admin_user)
+            db.commit()

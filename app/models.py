@@ -6,7 +6,10 @@ from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 import os
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, Integer, String, Index
+from sqlalchemy import Column, Integer, String, Index , DateTime, ForeignKey
+from datetime import datetime
+from sqlalchemy.orm import relationship
+
 # ----- K8s naming pattern & defaults -----
 DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
@@ -123,3 +126,29 @@ class KPIQuery(BaseModel):
     window: str = Field("1m", description="e.g., 1m or 5m")
     namespace: Optional[str] = Field(default=None, pattern=DNS1123_LABEL)
 
+
+from .db import Base
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), unique=True, nullable=False)
+    k8s_namespace = Column(String(200), unique=True, nullable=False)
+    status = Column(String(50), default="pending")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    users = relationship("User", back_populates="tenant")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(200), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(50), default="user")
+
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    tenant = relationship("Tenant", back_populates="users")

@@ -10,7 +10,7 @@ from .k8s_ops import (
     bg_prepare, bg_promote, bg_rollback,
 )
 from pydantic import BaseModel
-
+from .db import init_db
 
 class NameNS(BaseModel):
     name: str
@@ -184,3 +184,9 @@ async def legacy_apps_status(
 ):
     # أعِد استخدام نفس منطق /apps/status
     return await apps_status(name=name, namespace=namespace)
+
+
+@app.on_event("startup")
+def _startup():
+    # إنشاء الجداول + Seed لعميل Demo
+    init_db()
