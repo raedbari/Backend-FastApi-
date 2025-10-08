@@ -37,7 +37,8 @@ def init_db():
 
     # Seed
     from sqlalchemy.orm import Session
-    from passlib.hash import bcrypt  # pip install passlib[bcrypt]
+   # from passlib.hash import bcrypt  # pip install passlib[bcrypt]
+    from passlib.hash import pbkdf2_sha256
 
     with Session(engine) as db:
         tenant = db.query(Tenant).filter(Tenant.name == "Demo").first()
@@ -52,7 +53,7 @@ def init_db():
 
             admin_user = User(
                 email="demo@local",
-                password_hash=bcrypt.hash("demo123"),  # كلمة مرور بسيطة للاختبار
+                password_hash = pbkdf2_sha256.hash("demo123"),  # كلمة مرور بسيطة للاختبار
                 role="admin",
                 tenant_id=tenant.id,
             )
