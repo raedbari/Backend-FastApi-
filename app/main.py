@@ -27,6 +27,7 @@ app = FastAPI(
     docs_url="/api/docs",           
     openapi_url="/api/openapi.json", 
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
+     redoc_url=None,
 )
 
 
