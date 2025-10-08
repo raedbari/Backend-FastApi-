@@ -24,7 +24,8 @@ class NameNS(BaseModel):
 app = FastAPI(
     title="Cloud-Native DevOps Platform API",
     version="0.1.0",
-    
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json", 
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
 
 )
