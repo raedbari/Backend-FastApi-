@@ -13,3 +13,5 @@ PyJWT==2.9.0
 
 # إن ستستخدم PostgreSQL:
 # psycopg2-binary
+python-jose[cryptography]
+email-validator

@@ -1,6 +1,6 @@
 # app/main.py
 
-from fastapi import FastAPI, Query, HTTPException, APIRouter
+from fastapi import FastAPI, Query, HTTPException, APIRouter , Depends
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
@@ -10,7 +10,8 @@ from .k8s_ops import (
     bg_prepare, bg_promote, bg_rollback,
 )
 from pydantic import BaseModel
-from .db import init_db
+from .db import init_db ,get_db
+
 
 class NameNS(BaseModel):
     name: str
