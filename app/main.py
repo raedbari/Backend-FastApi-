@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 
+from .admin import router as admin_router
+
 from .models import AppSpec, ScaleRequest, StatusResponse
 from .k8s_ops import (
     upsert_deployment, upsert_service, list_status, scale,
@@ -186,3 +188,4 @@ def _startup():
 
     init_db()
 
+app.include_router(admin_router, prefix="/api")

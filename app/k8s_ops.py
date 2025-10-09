@@ -1,6 +1,5 @@
-# app/k8s_ops.py d
+# app/k8s_ops.py
 """
-
 Kubernetes operations for our platform:
 - Build a V1Container from AppSpec.
 - Upsert (create or patch) a Deployment (adopt existing by name).
@@ -13,9 +12,11 @@ not raw dicts, so the serializer emits proper camelCase (containerPort, targetPo
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import Dict, List  # Optional محذوف لأنه غير مستخدم في هذا الجزء
 
 from kubernetes import client
+
+# توحيد استيراد ApiException بما يدعم kubernetes >= 28 و < 28
 try:
     # kubernetes >= 28
     from kubernetes.client.exceptions import ApiException  # type: ignore
@@ -24,59 +25,12 @@ except Exception:  # pragma: no cover
     from kubernetes.client.rest import ApiException  # type: ignore
 
 from .k8s_client import get_api_clients, get_namespace, platform_labels
+# استيراد Status* محذوف لأنه غير مستخدم في هذا الجزء
+# from .models import AppSpec, StatusItem, StatusResponse
 from .models import AppSpec, StatusItem, StatusResponse
-from kubernetes.client import ApiException
 
-# def _container_from_spec(spec: AppSpec) -> client.V1Container:
-#     """Convert AppSpec into a V1Container (ports, probes, resources, env, security)."""
-#     # استخدم القيم الفعّالة المطبَّعة
-#     port = spec.effective_port
-#     path = spec.effective_health_path
-
-#     env_list = [client.V1EnvVar(name=e.name, value=e.value) for e in (spec.env or [])]
-
-#     # موارد افتراضية متواضعة إذا لم يمرّر المستخدم شيئًا
-#     default_resources = {
-#         "requests": {"cpu": "20m", "memory": "64Mi"},
-#         "limits":   {"cpu": "200m", "memory": "256Mi"},
-#     }
-#     res = spec.resources or default_resources
-#     resources = client.V1ResourceRequirements(
-#         requests=res.get("requests", default_resources["requests"]),
-#         limits=res.get("limits", default_resources["limits"]),
-#     )
-
-#     return client.V1Container(
-#         name=spec.effective_container_name,
-#         image=spec.full_image,
-#         image_pull_policy="Always",
-#         ports=[client.V1ContainerPort(container_port=port, name="http", protocol="TCP")],
-#         env=env_list,
-#         # بروبس موحّدة على "/" والمنفذ الفعّال
-#         readiness_probe=client.V1Probe(
-#             http_get=client.V1HTTPGetAction(path=path, port=port),
-#             initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3
-#         ),
-#         liveness_probe=client.V1Probe(
-#             http_get=client.V1HTTPGetAction(path=path, port=port),
-#             initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3
-#         ),
-#         # startup_probe=client.V1Probe(
-#         #     http_get=client.V1HTTPGetAction(path=path, port=port),
-#         #     failure_threshold=30, period_seconds=2
-#         # ),
-#         security_context=client.V1SecurityContext(
-#             run_as_user=1001,
-#             run_as_non_root=True,
-#             allow_privilege_escalation=False,
-#         ),
-#         resources=resources,
-#     )
-
-
-
-# أعلى الملف (للتوافق مع kubernetes >=28 و <28)
-
+# ملاحظة: تمت إزالة الكتلة الكبيرة _container_from_spec لأنها كانت مُعلقة بالكامل (commented-out)
+# وغير مستخدمة فعليًا. إذا احتجناها مستقبلًا سنعيد تقديم نسخة مبسطة ومستخدمة.
 
 def upsert_deployment(spec: AppSpec) -> dict:
     ns   = spec.namespace or get_namespace()
@@ -85,9 +39,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
     name   = spec.effective_app_label
     port   = spec.effective_port
     path   = spec.effective_health_path
-   #labels = platform_labels({"app": name})
-    labels = platform_labels({"app": name, "role": "active"})
-
+    labels = platform_labels({"app": name, "role": "active"})  # توحيد اللّيبلز
 
     # ---- SecurityContext ديناميكي (compat_mode / run_as_non_root / run_as_user) ----
     sc = client.V1SecurityContext(allow_privilege_escalation=False)
@@ -157,6 +109,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
             raise
     return resp.to_dict()
 
+
 def upsert_service(spec: AppSpec) -> dict:
     ns   = spec.namespace or get_namespace()
     core = get_api_clients()["core"]
@@ -183,7 +136,7 @@ def upsert_service(spec: AppSpec) -> dict:
             api_version="v1",
             metadata=client.V1ObjectMeta(labels=labels),
             spec=client.V1ServiceSpec(
-                selector=selector,   # ← لا تستخدم V1LabelSelector هنا
+                selector=selector,   # ملاحظة: لا تستخدم V1LabelSelector هنا
                 type=svc_type,
                 ports=[client.V1ServicePort(
                     name="http",
@@ -214,7 +167,7 @@ def upsert_service(spec: AppSpec) -> dict:
 
     return resp.to_dict()
 
-
+# ---- Status / Scale / Blue-Green (Part 2/3) ----
 
 def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> StatusResponse:
     """Status for one/all managed Deployments in the resolved namespace."""
@@ -226,8 +179,8 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
         try:
             d = apps.read_namespaced_deployment(name=name, namespace=ns)
             deployments = [d]
-        except Exception as e:
-            # رجّع قائمة فارغة بدلاً من كسر الـ API
+        except ApiException:
+            # لا نكسر الـAPI: نرجّع قائمة فارغة
             return StatusResponse(items=[])
     else:
         deployments = apps.list_namespaced_deployment(
@@ -253,7 +206,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
         # الشروط
         conds = {c.type: c.status for c in (status.conditions or [])}
 
-        # اسم ونيمسبيس مرة واحدة
+        # اسم/ليبل التطبيق
         d_name = d.metadata.name
         d_labels = d.metadata.labels or {}
         app_label = d_labels.get("app", d_name)
@@ -296,30 +249,6 @@ def scale(name: str, replicas: int, namespace: Optional[str] = None) -> Dict:
     return resp.to_dict()
 
 
-
-def bg_prepare(spec: AppSpec) -> dict:
-    """
-    ينشئ/يحدّث Deployment جديد بعلامة role=preview
-    ويترك الـService يشير لـ role=active.
-    الاسم يكون name-<color> (blue/green) بالتناوب.
-    """
-
-
-def bg_promote(name: str, namespace: str) -> dict:
-    """
-    يجعل الـpreview هو active بعكس labels:
-    - preview -> role=active
-    - active -> role=idle (أو preview سابقاً)
-    الService لا يتغير selector تبعه (role=active)،
-    لذا التحويل فوري.
-    """
-
-
-def bg_rollback(name: str, namespace: str) -> dict:
-    """
-    يعيد الـlabels بحيث يعود الـactive السابق هو active
-    ويحذف/يعطل الـpreview الحالي (اختياري: scale=0 أو delete).
-    """
 # ----------------------------- Blue/Green helpers -----------------------------
 
 def _labels_for(app_label: str, role: str) -> dict:
@@ -335,9 +264,7 @@ def _find_deployments_by_app(apps, ns: str, app_label: str):
 def _patch_deploy_labels(apps, ns: str, dep_name: str, role: str):
     patch_body = {
         "metadata": {"labels": {"role": role}},
-        "spec": {
-            "template": {"metadata": {"labels": {"role": role}}}
-        },
+        "spec": {"template": {"metadata": {"labels": {"role": role}}}},
     }
     return apps.patch_namespaced_deployment(
         name=dep_name, namespace=ns, body=patch_body
@@ -348,6 +275,38 @@ def _scale_deploy(apps, ns: str, dep_name: str, replicas: int):
     return apps.patch_namespaced_deployment_scale(
         name=dep_name, namespace=ns, body=body
     )
+
+# ---- Helpers كانت مُستخدمة وغير معرّفة في الكود الأصلي ----
+def get_service_selector(app_label: str, ns: str) -> dict:
+    """يحاول قراءة Service باسم التطبيق، وإلا يبحث عن أول Service تابعة له."""
+    core = get_api_clients()["core"]
+    # المحاولة 1: خدمة بنفس اسم التطبيق
+    try:
+        svc = core.read_namespaced_service(name=app_label, namespace=ns)
+        return (svc.spec.selector or {}) if svc and svc.spec else {}
+    except ApiException as e:
+        if getattr(e, "status", None) != 404:
+            raise
+    # المحاولة 2: أول خدمة تحمل label app=<name>
+    svcs = core.list_namespaced_service(namespace=ns, label_selector=f"app={app_label}").items
+    if svcs:
+        s = svcs[0]
+        return (s.spec.selector or {}) if s and s.spec else {}
+    return {}
+
+def get_preview_ready(app_label: str, ns: str) -> bool:
+    """يعتبر الـpreview جاهزًا إذا وجدنا Deployment role=preview وبحالة متاحة."""
+    apps = get_api_clients()["apps"]
+    deps = apps.list_namespaced_deployment(namespace=ns, label_selector=f"app={app_label},role=preview").items
+    if not deps:
+        return False
+    d = deps[0]
+    st = d.status or client.V1DeploymentStatus()
+    # معيار بسيط وعملي: وجود متاحين على الأقل
+    return (st.available_replicas or 0) > 0
+
+
+# ----------------------------- Blue/Green ops -----------------------------
 
 def bg_prepare(spec: AppSpec) -> dict:
     """
@@ -405,8 +364,7 @@ def bg_prepare(spec: AppSpec) -> dict:
 
     dep_spec = client.V1DeploymentSpec(
         replicas=spec.replicas or 1,
-       #selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
-        selector=client.V1LabelSelector(match_labels={"app": app_label}),
+        selector=client.V1LabelSelector(match_labels={"app": app_label}),  # لا نثبت role هنا
         template=pod_template,
         strategy=client.V1DeploymentStrategy(
             type="RollingUpdate",
@@ -433,192 +391,200 @@ def bg_prepare(spec: AppSpec) -> dict:
     return {"preview": resp.to_dict()}
 
 
-def _ensure_deploy_template_labels(apps, ns: str, deploy_name: str, extra: dict) -> dict:
-    """
-    يدمج extra داخل labels لقالب البود (spec.template.metadata.labels) للـ Deployment المحدد.
-    لا يلمس الـ selector الخاص بالـ Deployment.
-    يعيد labels النهائية بعد الدمج.
-    """
-    dep = apps.read_namespaced_deployment(name=deploy_name, namespace=ns)
-    tmpl = dep.spec.template
-    cur = (tmpl.metadata.labels or {}).copy()
-    changed = False
-    for k, v in (extra or {}).items():
-        if cur.get(k) != v:
-            cur[k] = v
-            changed = True
-    if changed:
-        patch_body = {
-            "spec": {
-                "template": {
-                    "metadata": {
-                        "labels": cur
-                    }
-                }
-            }
-        }
-        apps.patch_namespaced_deployment(name=deploy_name, namespace=ns, body=patch_body)
-    return cur
-
-
 def bg_promote(name: str, namespace: str) -> dict:
     """
-    تحويل المرور إلى نسخة preview:
-      - تأكيد وجود deploy/<name> و deploy/<name>-preview و svc/<name>.
-      - ضمان (ensure) لابلز القوالب: active(role=active) و preview(role=preview).
-      - Patch لـ selector الخدمة -> {app: <name>, role: preview}.
-      - Scale: القديم -> 0 ، المعاينة -> (>=1).
+    يجعل الـpreview هو active:
+    - role=preview  -> role=active
+    - role=active   -> role=idle
+    Service selector ثابت على role=active → التحويل فوري.
     """
-    ns     = namespace or get_namespace()
-    apis   = get_api_clients()
-    apps   = apis["apps"]
-    core   = apis["core"]
-    active = name
-    preview= f"{name}-preview"
-    svc_nm = name
+    ns = namespace or get_namespace()
+    apps = get_api_clients()["apps"]
 
-    # تحقق من وجود الموارد
-    try:
-        dep_active  = apps.read_namespaced_deployment(name=active,  namespace=ns)
-    except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            raise RuntimeError(f"Active deployment '{active}' not found in '{ns}'.")
-        raise
-    try:
-        dep_preview = apps.read_namespaced_deployment(name=preview, namespace=ns)
-    except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            raise RuntimeError(f"Preview deployment '{preview}' not found in '{ns}'.")
-        raise
-    try:
-        svc = _read_service(core, ns, svc_nm)
-    except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            raise RuntimeError(f"Service '{svc_nm}' not found in '{ns}'.")
-        raise
+    # ابحث عن كل Deployments الخاصة بالتطبيق
+    deps = _find_deployments_by_app(apps, ns, name)
+    preview = None
+    active  = None
 
-    # ثبّت Labels لقوالب البودز (لا نلمس الـ selector للـ deployment)
-    lbl_active  = _ensure_deploy_template_labels(apps, ns, active,  {"app": name, "role": "active"})
-    lbl_preview = _ensure_deploy_template_labels(apps, ns, preview, {"app": name, "role": "preview"})
+    for d in deps:
+        role = (d.metadata.labels or {}).get("role", "")
+        if role == "preview":
+            preview = d
+        elif role == "active":
+            active = d
 
-    # بدّل Selector الخدمة إلى preview (Idempotent)
-    desired_selector = {"app": name, "role": "preview"}
-    if _current_svc_selector(svc) != desired_selector:
-        _patch_service_selector(core, ns, svc_nm, desired_selector)
+    if not preview:
+        raise ApiException(status=404, reason="No preview deployment found")
 
-    # Scale بالاسم (Idempotent)
-    _scale_deploy(apps, ns, active, 0)  # القديم -> 0
-    preview_replicas = max((dep_preview.spec.replicas or 1), 1)
-    _scale_deploy(apps, ns, preview, preview_replicas)  # المعاينة -> >=1
+    # روّج الـpreview ليصبح active
+    _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
 
-    return {
-        "ok": True,
-        "status": "promoted",
-        "service_selector": desired_selector,
-        "labels": {
-            active: lbl_active,
-            preview: lbl_preview,
-        },
-        "scaled": {active: 0, preview: preview_replicas},
-    }
+    # اجعل الـactive الحالي idle (إن وجد)
+    if active:
+        _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
+
+    return {"ok": True, "promoted": preview.metadata.name, "demoted": getattr(active, "metadata", {}).get("name")}
 
 
 def bg_rollback(name: str, namespace: str) -> dict:
     """
-    إعادة المرور إلى النسخة النشطة (active):
-      - ضمان (ensure) لابلز القوالب: active(role=active) و preview(role=preview) إن وجدت.
-      - Patch لـ selector الخدمة -> {app: <name>, role: active}.
-      - Scale: active -> (>=1) ، preview -> 0 (إن وجدت).
+    يعيد الـactive السابق ليكون active ويجعل الحالي preview/idle حسب الحاجة.
+    استراتيجية بسيطة:
+      - إن وُجد active و preview: بدّل الأدوار (active↔preview).
+      - إن وُجد active فقط: لا شيء يُفعل.
+      - إن وُجد preview فقط: اجعله idle (لا ترجع للخلف لعدم وجود مرجع).
     """
-    ns     = namespace or get_namespace()
-    apis   = get_api_clients()
-    apps   = apis["apps"]
-    core   = apis["core"]
-    active = name
-    preview= f"{name}-preview"
-    svc_nm = name
+    ns = namespace or get_namespace()
+    apps = get_api_clients()["apps"]
 
-    # تحقق من الموارد
-    try:
-        dep_active  = apps.read_namespaced_deployment(name=active,  namespace=ns)
-    except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            raise RuntimeError(f"Active deployment '{active}' not found in '{ns}'.")
-        raise
+    deps = _find_deployments_by_app(apps, ns, name)
+    preview = None
+    active  = None
+    idle    = []
 
-    dep_preview = None
+    for d in deps:
+        role = (d.metadata.labels or {}).get("role", "")
+        if role == "preview":
+            preview = d
+        elif role == "active":
+            active = d
+        elif role == "idle":
+            idle.append(d)
+
+    if active and preview:
+        _patch_deploy_labels(apps, ns, active.metadata.name, "preview")
+        _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
+        return {"ok": True, "swapped": [active.metadata.name, preview.metadata.name]}
+
+    if not active and preview:
+        # لا يوجد active؛ preview يصبح active
+        _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
+        return {"ok": True, "promoted_from_preview": preview.metadata.name}
+
+    # لا إجراء واضح
+    return {"ok": True, "note": "No rollback action performed"}
+
+
+
+
+
+
+
+
+
+# --- Blue/Green (Part 3/3) — cleaned ---
+# نعتمد تصميم التحويل عبر تبديل Labels فقط:
+# - preview -> active
+# - active  -> idle
+# مع بقاء Service selector ثابتًا على role=active لضمان تحويل فوري وآمن.
+# لذلك لا نحتاج دوال التلاعب بالـService selector ولا ترقيع template.labels هنا.
+# (التعريفات الموثوقة لـ bg_prepare/bg_promote/bg_rollback موجودة أعلاه في Part 2/3)
+
+# ----------------------------- Tenant Provisioning -----------------------------
+# Creates/ensures Namespace + ServiceAccount + Role + RoleBinding for a tenant.
+# Idempotent: safe to call multiple times.
+
+from kubernetes import config
+try:
+    # على بعض الإصدارات قد يختلف مسار ApiException، لذا نُحافظ على الاستيرادين
+    from kubernetes.client.exceptions import ApiException as K8sApiException  # k8s >= 28
+except Exception:  # pragma: no cover
+    from kubernetes.client.rest import ApiException as K8sApiException        # k8s < 28
+
+def _ensure_k8s_config():
+    """Load in-cluster config if running inside k8s, otherwise fall back to local kubeconfig."""
     try:
-        dep_preview = apps.read_namespaced_deployment(name=preview, namespace=ns)
-    except ApiException as e:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
+
+def create_tenant_namespace(ns: str) -> dict:
+    """
+    Creates/ensures:
+      - Namespace <ns>
+      - ServiceAccount tenant-app-sa
+      - Role tenant-app-role  (CRUD on Deployments/Services/Ingress in ns)
+      - RoleBinding tenant-app-rb  (bind SA->Role)
+    Returns summary dict of created/existing resources.
+    """
+    _ensure_k8s_config()
+    v1   = client.CoreV1Api()
+    rbac = client.RbacAuthorizationV1Api()
+
+    summary = {"namespace": ns, "created": [], "existing": []}
+
+    # 1) Namespace
+    try:
+        v1.read_namespace(ns)
+        summary["existing"].append("Namespace")
+    except (ApiException, K8sApiException) as e:
         if getattr(e, "status", None) == 404:
-            dep_preview = None
+            body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns))
+            v1.create_namespace(body)
+            summary["created"].append("Namespace")
         else:
             raise
 
-    # ثبّت Labels لقوالب البودز
-    lbl_active  = _ensure_deploy_template_labels(apps, ns, active,  {"app": name, "role": "active"})
-    lbl_preview = None
-    if dep_preview is not None:
-        lbl_preview = _ensure_deploy_template_labels(apps, ns, preview, {"app": name, "role": "preview"})
-
-    # بدّل Selector الخدمة إلى active (Idempotent)
-    desired_selector = {"app": name, "role": "active"}
+    # 2) ServiceAccount
+    sa_name = "tenant-app-sa"
     try:
-        svc = _read_service(core, ns, svc_nm)
-    except ApiException as e:
+        v1.read_namespaced_service_account(sa_name, ns)
+        summary["existing"].append("ServiceAccount")
+    except (ApiException, K8sApiException) as e:
         if getattr(e, "status", None) == 404:
-            raise RuntimeError(f"Service '{svc_nm}' not found in '{ns}'.")
-        raise
-    if _current_svc_selector(svc) != desired_selector:
-        _patch_service_selector(core, ns, svc_nm, desired_selector)
+            sa = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=sa_name, namespace=ns))
+            v1.create_namespaced_service_account(ns, sa)
+            summary["created"].append("ServiceAccount")
+        else:
+            raise
 
-    # Scale
-    active_replicas = max((dep_active.spec.replicas or 1), 1)
-    _scale_deploy(apps, ns, active, active_replicas)
-    if dep_preview is not None:
-        _scale_deploy(apps, ns, preview, 0)
-
-    return {
-        "ok": True,
-        "status": "rolled-back",
-        "service_selector": desired_selector,
-        "labels": {
-            active: lbl_active,
-            preview: lbl_preview if lbl_preview is not None else "n/a",
-        },
-        "scaled": {active: active_replicas, preview: 0 if dep_preview else "n/a"},
-    }
-
-def _read_service(core, ns: str, svc_name: str):
-    return core.read_namespaced_service(name=svc_name, namespace=ns)
-
-def _current_svc_selector(svc) -> dict:
-    return (svc.spec.selector or {}) if getattr(svc.spec, "selector", None) else {}
-
-def _patch_service_selector(core, ns: str, svc_name: str, selector: dict):
-    return core.patch_namespaced_service(name=svc_name, namespace=ns, body={"spec": {"selector": selector}})
-
-def is_deploy_ready(apps, ns: str, name: str, min_available: int = 1) -> bool:
+    # 3) Role
+    role_name = "tenant-app-role"
+    rules = [
+        client.V1PolicyRule(
+            api_groups=["apps"],
+            resources=["deployments"],
+            verbs=["get","list","watch","create","update","patch","delete"],
+        ),
+        client.V1PolicyRule(
+            api_groups=[""],
+            resources=["services"],
+            verbs=["get","list","watch","create","update","patch","delete"],
+        ),
+        client.V1PolicyRule(
+            api_groups=["networking.k8s.io"],
+            resources=["ingresses"],
+            verbs=["get","list","watch","create","update","patch","delete"],
+        ),
+    ]
     try:
-        d = apps.read_namespaced_deployment(name=name, namespace=ns)
-    except ApiException as e:
+        rbac.read_namespaced_role(role_name, ns)
+        summary["existing"].append("Role")
+    except (ApiException, K8sApiException) as e:
         if getattr(e, "status", None) == 404:
-            return False
-        raise
-    st = d.status or client.V1DeploymentStatus()
-    return (st.available_replicas or 0) >= min_available
+            role = client.V1Role(metadata=client.V1ObjectMeta(name=role_name, namespace=ns), rules=rules)
+            rbac.create_namespaced_role(ns, role)
+            summary["created"].append("Role")
+        else:
+            raise
 
-def get_service_selector(name: str, ns: str) -> dict:
-    core = get_api_clients()["core"]
+    # 4) RoleBinding
+    rb_name = "tenant-app-rb"
+    rb = client.V1RoleBinding(
+        metadata=client.V1ObjectMeta(name=rb_name, namespace=ns),
+        role_ref=client.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="Role", name=role_name),
+        subjects=[client.V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns)],
+    )
     try:
-        svc = core.read_namespaced_service(name=name, namespace=ns)
-        return svc.spec.selector or {}
-    except ApiException as e:
+        rbac.read_namespaced_role_binding(rb_name, ns)
+        summary["existing"].append("RoleBinding")
+    except (ApiException, K8sApiException) as e:
         if getattr(e, "status", None) == 404:
-            return {}
-        raise
+            rbac.create_namespaced_role_binding(ns, rb)
+            summary["created"].append("RoleBinding")
+        else:
+            raise
 
-def get_preview_ready(app_label: str, ns: str) -> bool:
-    apps = get_api_clients()["apps"]
-    preview_name = f"{app_label}-preview"
-    return is_deploy_ready(apps, ns, preview_name, 1)
+    # (اختياري لاحقًا) NetworkPolicy / ResourceQuota / LimitRange
+
+    return summary

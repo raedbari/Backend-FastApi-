@@ -5,29 +5,22 @@ from __future__ import annotations
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 import os
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, Integer, String, Index , DateTime, ForeignKey , func, UniqueConstraint
-from datetime import datetime
+from sqlalchemy import (
+    Column, Integer, String, Index, DateTime, ForeignKey, func,
+    UniqueConstraint, CheckConstraint
+)
 from sqlalchemy.orm import relationship
 
 # ----- K8s naming pattern & defaults -----
 DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
 
+# SQLAlchemy Base comes from app.db to avoid duplicate declarative_base()
+from .db import Base
 
-
-Base = declarative_base()
-
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    username = Column(String, unique=True, index=True, nullable=False)
-    password_hash = Column(String, nullable=False)
-    tenant_id = Column(String, index=True, nullable=False)
-    role = Column(String, default="admin")
-
-Index("ix_users_tenant_username", User.tenant_id, User.username)
-
+# --------------------------------------------------------------------
+# --------------------------- Pydantic -------------------------------
+# --------------------------------------------------------------------
 
 class EnvVar(BaseModel):
     """Represents a container environment variable, e.g., NODE_ENV=production."""
@@ -127,16 +120,18 @@ class KPIQuery(BaseModel):
     namespace: Optional[str] = Field(default=None, pattern=DNS1123_LABEL)
 
 
-from .db import Base
-
+# --------------------------------------------------------------------
+# ------------------------- SQLAlchemy -------------------------------
+# --------------------------------------------------------------------
 
 class Tenant(Base):
     __tablename__ = "tenants"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(200), nullable=False, unique=True)           # اسم العميل (شركة/مؤسسة)
-    k8s_namespace = Column(String(200), nullable=False, unique=True)  # النيمسبيس المخصص للعميل
-    status = Column(String(50), nullable=False, default="pending")    # pending / active / suspended
+    name = Column(String(200), nullable=False, unique=True)              # اسم العميل
+    # nullable=True حتى الموافقة (namespace يُنشأ بالتزويد)
+    k8s_namespace = Column(String(200), nullable=True, unique=True)
+    status = Column(String(50), nullable=False, default="pending")       # pending / active / suspended / rejected
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     # علاقة مستخدمين ← عميل
@@ -144,21 +139,27 @@ class Tenant(Base):
 
     __table_args__ = (
         Index("ix_tenants_name", "name"),
+        CheckConstraint(
+            "status IN ('pending','active','suspended','rejected')",
+            name="ck_tenants_status_valid"
+        ),
     )
+
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(200), nullable=False)
+    # فريد عالميًا بما يطابق منطق /auth/signup و /auth/login
+    email = Column(String(200), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False, default="admin")        # admin / user
+    role = Column(String(50), nullable=False, default="admin")            # admin / user
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
 
     __table_args__ = (
-        UniqueConstraint("email", "tenant_id", name="uq_users_email_tenant"),
+        
         Index("ix_users_tenant_id", "tenant_id"),
     )

@@ -36,7 +36,7 @@ class LoginUser(BaseModel):
 class LoginTenant(BaseModel):
     id: int
     name: str
-    k8s_namespace: str
+    k8s_namespace: str | None = None
 
 class LoginResponse(BaseModel):
     access_token: str
@@ -44,6 +44,18 @@ class LoginResponse(BaseModel):
     expires_in: int
     user: LoginUser
     tenant: LoginTenant
+
+# ---- Signup payloads/response ----
+class SignupRequest(BaseModel):
+    company: str
+    email: EmailStr
+    password: str
+
+class SignupResponse(BaseModel):
+    ok: bool = True
+    tenant_id: int
+    status: str = "pending"
+
 
 # ----------------------------
 # دوال مساعدة
@@ -54,29 +66,78 @@ def verify_password(plain: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(*, sub: str, tid: int, ns: str, role: str) -> str:
+def hash_password(plain: str) -> str:
+    return pbkdf2_sha256.hash(plain)
+
+def create_access_token(*, sub: str, tid: int, ns: str | None, role: str) -> str:
     now = datetime.utcnow()
     to_encode = {
         "sub": sub,
         "tid": tid,            # tenant_id
-        "ns": ns,              # namespace المسموح
+        "ns": ns,              # namespace المسموح (قد يكون None قبل الموافقة)
         "role": role,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(hours=JWT_EXP_HOURS)).timestamp()),
     }
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALG)
 
+
 # ----------------------------
-# تسجيل الدخول
+# Router
 # ----------------------------
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+
+# ----------------------------
+# Self-Signup
+# ----------------------------
+@router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
+def signup(payload: SignupRequest, db: Session = Depends(get_db)):
+    # تحقق من فريدية البريد
+    exists = db.query(User).filter(User.email == payload.email).first()
+    if exists:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    # إنشاء Tenant بحالة pending
+    tenant = Tenant(
+        name=payload.company,
+        status="pending",
+        k8s_namespace=None,
+    )
+    db.add(tenant)
+    db.flush()  # للحصول على tenant.id دون إنهاء المعاملة
+
+    # إنشاء User admin مرتبط بالتينانت
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role="admin",
+        tenant_id=tenant.id,
+    )
+    db.add(user)
+    db.commit()
+
+    return SignupResponse(tenant_id=tenant.id, status="pending")
+
+
+# ----------------------------
+# تسجيل الدخول
+# ----------------------------
 @router.post("/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    """
+    سلوك الواجهة:
+    - بيانات اعتماد خاطئة -> 404 "Not Found" (حتى لا نفضح وجود الحساب)
+    - حساب موجود لكن التينانت ليس active:
+        pending    -> 403 "Account pending approval"
+        suspended  -> 403 "Account suspended"
+        rejected   -> 403 "Account rejected"
+    - نجاح -> 200 مع JWT
+    """
     resp = login_user(db, payload.email, payload.password)
     if not resp:
-        # لتسهيل الديبج، خليك consistent مع ما تظهره بالواجهة
-        raise HTTPException(status_code=404, detail="Not Found")
+        # توحيد الاستجابة عند فشل الاعتماد: 404
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
     return resp
 
 
@@ -85,9 +146,20 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
     if not user or not verify_password(password, user.password_hash):
         return None
 
-    tenant: Tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
-    if not tenant or tenant.status != "active":
+    tenant: Optional[Tenant] = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
+    if not tenant:
         return None
+
+    # منع الدخول إذا لم يكن التينانت "active" مع رسائل دقيقة
+    if tenant.status != "active":
+        msg = "Forbidden"
+        if tenant.status == "pending":
+            msg = "Account pending approval"
+        elif tenant.status == "suspended":
+            msg = "Account suspended"
+        elif tenant.status == "rejected":
+            msg = "Account rejected"
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=msg)
 
     token = create_access_token(
         sub=user.email,
@@ -102,6 +174,7 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
         tenant=LoginTenant(id=tenant.id, name=tenant.name, k8s_namespace=tenant.k8s_namespace),
     )
 
+
 # ----------------------------
 # Dependencies لاستخراج الـcontext
 # ----------------------------
@@ -111,7 +184,7 @@ class CurrentContext(BaseModel):
     email: EmailStr
     role: str
     tenant_id: int
-    k8s_namespace: str
+    k8s_namespace: str | None = None
 
 def get_current_context(
     cred: HTTPAuthorizationCredentials = Depends(bearer_scheme),
@@ -123,9 +196,9 @@ def get_current_context(
         tid = payload.get("tid")
         ns = payload.get("ns")
         role = payload.get("role") or "user"
-        if not email or not tid or not ns:
+        if not email or tid is None:
             raise ValueError("bad claims")
-        return CurrentContext(email=email, role=role, tenant_id=int(tid), k8s_namespace=str(ns))
+        return CurrentContext(email=email, role=role, tenant_id=int(tid), k8s_namespace=(None if ns is None else str(ns)))
     except (JWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
