@@ -29,6 +29,7 @@ app = FastAPI(
     description="MVP starting point. Deploy/scale/status endpoints for K8s workloads.",
 
 )
+app.include_router(auth_router, prefix="/api")
 
 
 # -------------------------------------------------------------------
@@ -60,7 +61,7 @@ async def healthz():
     return {"status": "ok"}
 
 
-@app.get("/")
+@app.get("/api")
 async def root():
     return {"message": "Hello! API is running. Open /docs to try it out."}
 
