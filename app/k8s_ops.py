@@ -461,9 +461,12 @@ def bg_rollback(name: str, namespace: str) -> dict:
         _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
         return {"ok": True, "promoted_from_preview": preview.metadata.name}
 
+
+
     # لا إجراء واضح
     return {"ok": True, "note": "No rollback action performed"}
 
+    
 
 
 
@@ -500,91 +503,105 @@ def _ensure_k8s_config():
 
 def create_tenant_namespace(ns: str) -> dict:
     """
-    Creates/ensures:
-      - Namespace <ns>
-      - ServiceAccount tenant-app-sa
-      - Role tenant-app-role  (CRUD on Deployments/Services/Ingress in ns)
-      - RoleBinding tenant-app-rb  (bind SA->Role)
-    Returns summary dict of created/existing resources.
+    Ensure tenant namespace resources exist (idempotent):
+    - Namespace (اختياري: لو ما عندك ClusterScope، تجاهل إنشاؤه ويكفي وجوده)
+    - ServiceAccount tenant-app-sa
+    - Role tenant-app-role (صلاحيات على Deployments/Services/Ingress داخل نفس الـns)
+    - RoleBinding يربط الـSA بالـRole
     """
-    _ensure_k8s_config()
-    v1   = client.CoreV1Api()
-    rbac = client.RbacAuthorizationV1Api()
+    apis = get_api_clients()
+    v1   = apis["core"]     # CoreV1Api
+    rbac = apis["rbac"]     # RbacAuthorizationV1Api
 
-    summary = {"namespace": ns, "created": [], "existing": []}
+    created = {"namespace": False, "serviceaccount": False, "role": False, "rolebinding": False}
 
-    # 1) Namespace
+    # 0) حاول قراءة الـNamespace؛ إذا 404 جرّب إنشاؤه (قد تفشل 403 إن لم تكن لديك صلاحية كلستر)
     try:
         v1.read_namespace(ns)
-        summary["existing"].append("Namespace")
-    except (ApiException, K8sApiException) as e:
+    except ApiException as e:
         if getattr(e, "status", None) == 404:
-            body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns))
-            v1.create_namespace(body)
-            summary["created"].append("Namespace")
-        else:
-            raise
+            try:
+                body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns))
+                v1.create_namespace(body)
+                created["namespace"] = True
+            except ApiException as e2:
+                # لا صلاحية كلستر؟ لا نكسر التنفيذ—نُكمل RBAC داخل الـns على افتراض أنه صار موجودًا
+                if getattr(e2, "status", None) != 409:  # 409 = موجود
+                    pass
+        elif getattr(e, "status", None) != 200:
+            pass
 
-    # 2) ServiceAccount
+    # 1) ServiceAccount
     sa_name = "tenant-app-sa"
     try:
         v1.read_namespaced_service_account(sa_name, ns)
-        summary["existing"].append("ServiceAccount")
-    except (ApiException, K8sApiException) as e:
+    except ApiException as e:
         if getattr(e, "status", None) == 404:
-            sa = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=sa_name, namespace=ns))
+            sa = client.V1ServiceAccount(
+                metadata=client.V1ObjectMeta(name=sa_name, namespace=ns)
+            )
             v1.create_namespaced_service_account(ns, sa)
-            summary["created"].append("ServiceAccount")
+            created["serviceaccount"] = True
         else:
             raise
 
-    # 3) Role
+    # 2) Role (صلاحيات داخل الـns فقط)
     role_name = "tenant-app-role"
-    rules = [
-        client.V1PolicyRule(
-            api_groups=["apps"],
-            resources=["deployments"],
-            verbs=["get","list","watch","create","update","patch","delete"],
-        ),
-        client.V1PolicyRule(
-            api_groups=[""],
-            resources=["services"],
-            verbs=["get","list","watch","create","update","patch","delete"],
-        ),
-        client.V1PolicyRule(
-            api_groups=["networking.k8s.io"],
-            resources=["ingresses"],
-            verbs=["get","list","watch","create","update","patch","delete"],
-        ),
-    ]
     try:
         rbac.read_namespaced_role(role_name, ns)
-        summary["existing"].append("Role")
-    except (ApiException, K8sApiException) as e:
+    except ApiException as e:
         if getattr(e, "status", None) == 404:
-            role = client.V1Role(metadata=client.V1ObjectMeta(name=role_name, namespace=ns), rules=rules)
+            rules = [
+                # Deployments داخل apps
+                client.V1PolicyRule(
+                    api_groups=["apps"],
+                    resources=["deployments"],
+                    verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+                ),
+                # Services داخل core
+                client.V1PolicyRule(
+                    api_groups=[""],
+                    resources=["services"],
+                    verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+                ),
+                # Ingresses داخل networking.k8s.io
+                client.V1PolicyRule(
+                    api_groups=["networking.k8s.io"],
+                    resources=["ingresses"],
+                    verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+                ),
+            ]
+            role = client.V1Role(
+                metadata=client.V1ObjectMeta(name=role_name, namespace=ns),
+                rules=rules,
+            )
             rbac.create_namespaced_role(ns, role)
-            summary["created"].append("Role")
+            created["role"] = True
         else:
             raise
 
-    # 4) RoleBinding
-    rb_name = "tenant-app-rb"
-    rb = client.V1RoleBinding(
-        metadata=client.V1ObjectMeta(name=rb_name, namespace=ns),
-        role_ref=client.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="Role", name=role_name),
-        subjects=[client.V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns)],
-    )
+    # 3) RoleBinding (استخدم RbacV1Subject وليس V1Subject)
+    rb_name = "tenant-app-binding"
     try:
         rbac.read_namespaced_role_binding(rb_name, ns)
-        summary["existing"].append("RoleBinding")
-    except (ApiException, K8sApiException) as e:
+    except ApiException as e:
         if getattr(e, "status", None) == 404:
+            rb = client.V1RoleBinding(
+                metadata=client.V1ObjectMeta(name=rb_name, namespace=ns),
+                subjects=[
+                    client.RbacV1Subject(  # <-- هذا هو التصحيح
+                        kind="ServiceAccount", name=sa_name, namespace=ns
+                    )
+                ],
+                role_ref=client.V1RoleRef(
+                    api_group="rbac.authorization.k8s.io",
+                    kind="Role",
+                    name=role_name,
+                ),
+            )
             rbac.create_namespaced_role_binding(ns, rb)
-            summary["created"].append("RoleBinding")
+            created["rolebinding"] = True
         else:
             raise
 
-    # (اختياري لاحقًا) NetworkPolicy / ResourceQuota / LimitRange
-
-    return summary
+    return {"ok": True, "namespace": ns, "created": created}
