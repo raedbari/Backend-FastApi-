@@ -11,6 +11,7 @@ from .k8s_ops import (
 )
 from pydantic import BaseModel
 from .db import init_db ,get_db
+from .auth import router as auth_router
 
 
 class NameNS(BaseModel):
@@ -195,3 +196,4 @@ async def legacy_apps_status(
 def _startup():
     # إنشاء الجداول + Seed لعميل Demo
     init_db()
+
