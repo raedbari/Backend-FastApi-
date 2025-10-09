@@ -6,7 +6,7 @@ from typing import Optional
 from jose import jwt, JWTError
 from passlib.hash import pbkdf2_sha256
 from pydantic import BaseModel, EmailStr
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, APIRouter
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -70,6 +70,15 @@ def create_access_token(*, sub: str, tid: int, ns: str, role: str) -> str:
 # تسجيل الدخول
 # ----------------------------
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+@router.post("/login", response_model=LoginResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    resp = login_user(db, payload.email, payload.password)
+    if not resp:
+        # لتسهيل الديبج، خليك consistent مع ما تظهره بالواجهة
+        raise HTTPException(status_code=404, detail="Not Found")
+    return resp
+
 
 def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse]:
     user: Optional[User] = db.query(User).filter(User.email == email).first()
