@@ -466,7 +466,7 @@ def bg_rollback(name: str, namespace: str) -> dict:
     # لا إجراء واضح
     return {"ok": True, "note": "No rollback action performed"}
 
-    
+
 
 
 
@@ -605,3 +605,4 @@ def create_tenant_namespace(ns: str) -> dict:
             raise
 
     return {"ok": True, "namespace": ns, "created": created}
+
