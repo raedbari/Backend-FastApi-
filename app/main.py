@@ -62,7 +62,7 @@ app.add_middleware(
 # -------------------------------------------------------------------
 # Basic routes (كلها الآن تحت /api/...)
 # -------------------------------------------------------------------
-@api.get("/api/healthz")
+@api.get("/healthz")
 async def healthz():
     return {"status": "ok"}
 
