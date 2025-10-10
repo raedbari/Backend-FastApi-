@@ -163,3 +163,24 @@ class User(Base):
         
         Index("ix_users_tenant_id", "tenant_id"),
     )
+
+# --- Lightweight audit & provisioning runs ---
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, func, Text
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    action = Column(String(100), nullable=False)
+    actor_email = Column(String(200), nullable=False)
+    result = Column(String(200), nullable=False, default="ok")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+class ProvisioningRun(Base):
+    __tablename__ = "provisioning_runs"
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    status = Column(String(50), nullable=False, default="queued")  # queued/running/done/failed
+    last_error = Column(Text, nullable=True)
+    retries = Column(Integer, nullable=True, default=0)
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
