@@ -139,8 +139,10 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
 admin_router = APIRouter(prefix="/admin/tenants", tags=["admin"])
 
 def _ensure_admin(ctx: CurrentContext):
-    if ctx.role != "admin":
+    # اسمح لكلا الدورين
+    if ctx.role not in ("platform_admin", "admin"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
 
 @admin_router.get("/pending", response_model=List[PendingTenant])
 def list_pending(ctx: CurrentContext = Depends(get_current_context), db: Session = Depends(get_db)):
