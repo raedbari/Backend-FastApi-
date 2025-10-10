@@ -160,11 +160,12 @@ class ApprovePayload(BaseModel):
 @admin_router.post("/{tenant_id}/approve")
 def approve(
     tenant_id: int,
-    _: ApprovePayload | None = None,
-    bg: BackgroundTasks = Depends(),
+    bg: BackgroundTasks,                             # ⚠️ بدون Depends
+    body: ApprovePayload | None = None,             # (اختياري) بعد الـbg
     ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
 ):
+
     _ensure_admin(ctx)
     t = db.get(Tenant, tenant_id)
     if not t:
