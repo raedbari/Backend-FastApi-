@@ -150,7 +150,7 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
     if not tenant:
         return None
 
-    # 👈 التعديل هنا: اسمح للـ platform_admin بالدخول حتى لو الحالة ليست active
+    # 👈 التعديل هنا: اسمح لـ platform_admin بالدخول حتى لو الحالة ليست active
     if tenant.status != "active" and (user.role or "user") != "platform_admin":
         msg = "Forbidden"
         if tenant.status == "pending":
