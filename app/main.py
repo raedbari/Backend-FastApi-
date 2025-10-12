@@ -190,7 +190,7 @@ async def legacy_apps_status(
 ):
     return await apps_status(name=name, ctx=ctx)
 
-# ضم الراوترات
+# ضم الراوترا
 app.include_router(api)
 app.include_router(monitor)
 
