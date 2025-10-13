@@ -475,7 +475,7 @@ def bg_rollback(name: str, namespace: str) -> dict:
 
 
 
-# --- Blue/Green (Part 3/3) — cleaned ---
+# -- Blue/Green (Part 3/3) — cleaned ---
 # نعتمد تصميم التحويل عبر تبديل Labels فقط:
 # - preview -> active
 # - active  -> idle
