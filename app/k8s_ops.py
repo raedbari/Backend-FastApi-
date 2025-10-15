@@ -236,6 +236,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
                 preview_ready=prev_ok,
             )
         )
+        
 
     return StatusResponse(items=items)
 
