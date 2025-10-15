@@ -58,6 +58,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SECRET_KEY = "YOUR_JWT_SECRET"  # استخدم نفس المفتاح من الإعدادات
+ALGORITHM = "HS256"
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        namespace = payload.get("ns")
+        role = payload.get("role")
+
+        if email is None or namespace is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+        return User(email=email, namespace=namespace, role=role)
+
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
 # -------------------------------------------------------------------
 # Basic routes
