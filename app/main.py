@@ -1,8 +1,12 @@
 # app/main.py
-from fastapi import FastAPI, Query, HTTPException, APIRouter, Depends
+from fastapi import FastAPI, Query, HTTPException, APIRouter, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
+
+# مكتبات JWT للتحقق من التوكنات
+from jose import JWTError, jwt
+from fastapi.security import OAuth2PasswordBearer
 
 from .onboarding import router as onboarding_router, admin_router as onboarding_admin_router
 from .models import AppSpec, ScaleRequest, StatusResponse
@@ -13,6 +17,21 @@ from .k8s_ops import (
 from .db import init_db
 from .auth import router as auth_router
 from .auth import get_current_context, CurrentContext
+
+# -------------------------------------------------------------------
+# إعداد OAuth2 لقراءة التوكن من الهيدر Authorization
+# -------------------------------------------------------------------
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+# -------------------------------------------------------------------
+# تعريف نموذج المستخدم لتفسير بيانات الـJWT
+# -------------------------------------------------------------------
+class User(BaseModel):
+    email: str
+    namespace: str
+    role: str | None = None
+
+
 
 
 class NameNS(BaseModel):
@@ -58,25 +77,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# SECRET_KEY = "YOUR_JWT_SECRET"  # استخدم نفس المفتاح من الإعدادات
-# ALGORITHM = "HS256"
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
+JWT_ALG = "HS256"
 
-# def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
-#     try:
-#         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-#         email = payload.get("sub")
-#         namespace = payload.get("ns")
-#         role = payload.get("role")
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        email = payload.get("sub")
+        namespace = payload.get("ns")
+        role = payload.get("role")
 
-#         if email is None or namespace is None:
-#             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        if email is None or namespace is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-#         return User(email=email, namespace=namespace, role=role)
+        return {"email": email, "namespace": namespace, "role": role}
 
-#     except JWTError:
-#         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-# -------------------------------------------------------------------
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+----------------------------------------------------
 # Basic routes
 # -------------------------------------------------------------------
 @api.get("/healthz")
@@ -109,21 +127,34 @@ def _ctx_ns(ctx: CurrentContext) -> str:
 @api.post("/apps/deploy")
 async def deploy_app(spec: AppSpec, ctx: CurrentContext = Depends(get_current_context)):
     try:
-        spec = _force_ns_on_spec(spec, ctx)
+        spec = _force_ns_on_spec(spec, ctx)               # يفرض ns من الـJWT
+        _ = verify_namespace_access(ctx, spec.namespace)  # يتأكد أن ns مسموح
         deployment = upsert_deployment(spec)
         service = upsert_service(spec)
         return {"deployment": deployment, "service": service}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+# @api.post("/apps/scale")
+# async def scale_app(req: ScaleRequest, ctx: CurrentContext = Depends(get_current_context)):
+#     try:
+
+#         ns = verify_namespace_access(ctx)
+#        result = scale(req.name, req.replicas, namespace=ns)
+
+#         return result
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e)) from e
+
 @api.post("/apps/scale")
 async def scale_app(req: ScaleRequest, ctx: CurrentContext = Depends(get_current_context)):
     try:
-
-        result = scale(req.name, req.replicas, namespace=_ctx_ns(ctx))
+        ns = verify_namespace_access(ctx)
+        result = scale(req.name, req.replicas, namespace=ns)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @api.get("/apps/status", response_model=StatusResponse)
 async def apps_status(
@@ -131,10 +162,11 @@ async def apps_status(
     ctx: CurrentContext = Depends(get_current_context),
 ):
     try:
-
-        return list_status(name=name, namespace=_ctx_ns(ctx))
+        ns = verify_namespace_access(ctx)
+        return list_status(name=name, namespace=ns)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
 
 @api.post("/apps/bluegreen/prepare")
 async def bluegreen_prepare(spec: AppSpec, ctx: CurrentContext = Depends(get_current_context)):
@@ -146,18 +178,22 @@ async def bluegreen_prepare(spec: AppSpec, ctx: CurrentContext = Depends(get_cur
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+
 @api.post("/apps/bluegreen/promote")
 async def bluegreen_promote(req: NameNS, ctx: CurrentContext = Depends(get_current_context)):
     try:
-        res = bg_promote(name=req.name, namespace=_ctx_ns(ctx))
+        ns = verify_namespace_access(ctx)
+        res = bg_promote(name=req.name, namespace=ns)
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+
 @api.post("/apps/bluegreen/rollback")
 async def bluegreen_rollback(req: NameNS, ctx: CurrentContext = Depends(get_current_context)):
     try:
-        res = bg_rollback(name=req.name, namespace=_ctx_ns(ctx))
+        ns = verify_namespace_access(ctx)
+        res = bg_rollback(name=req.name, namespace=ns)
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -194,7 +230,8 @@ def grafana_url(
 ):
 
     try:
-        url = build_dashboard_url(_ctx_ns(ctx), app)
+        ns = verify_namespace_access(ctx)
+        url = build_dashboard_url(ns, app)
         return {"url": url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -223,3 +260,28 @@ def _startup():
 app.include_router(onboarding_router, prefix="/api")
 app.include_router(onboarding_admin_router, prefix="/api")
 router = APIRouter(prefix="/auth")
+
+
+
+# -------------------------------------------------------------------
+# 🔒 Namespace access guard (centralized)
+# -------------------------------------------------------------------
+def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None) -> str:
+    """
+    يُعيد الـnamespace المسموح استعماله للطلب الحالي.
+    - غير المدير: يُجبر على ctx.k8s_namespace، ويرفض أي requested_ns مختلف.
+    - المدير/المالك: يسمح بالـrequested_ns إن وُجد، وإلا يعيد ctx.k8s_namespace.
+    ملاحظة: إذا لم يوفّر CurrentContext الدور، نعامل الطلب كـ"غير مدير".
+    """
+    user_ns = getattr(ctx, "k8s_namespace", None)
+    user_role = (getattr(ctx, "role", None) or getattr(ctx, "user_role", None) or "").lower()
+
+    is_admin = user_role in ("admin", "platform_admin")
+
+    if not is_admin:
+        if requested_ns and requested_ns != user_ns:
+            raise HTTPException(status_code=403, detail="Access denied for this namespace")
+        return user_ns or requested_ns  # يظل يجبر على ns من السياق
+
+    # المسؤول مسموح له تحديد أي ns؛ إن لم يمرِّر، استخدم ns من السياق
+    return requested_ns or user_ns
