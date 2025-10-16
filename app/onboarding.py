@@ -146,8 +146,15 @@ admin_router = APIRouter(prefix="/admin/tenants", tags=["admin"])
 
 
 def _ensure_admin(ctx: CurrentContext):
-    if ctx.role not in ("platform_admin", "admin"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    """
+    يُسمح فقط للمستخدم الذي يحمل الدور platform_admin بالوصول إلى هذه المسارات.
+    أما أي admin آخر (tenant admin) فسيُرفض طلبه لحماية بيانات المنصة.
+    """
+    if ctx.role != "platform_admin":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail="Access denied: only platform_admin can view or manage platform tenants."
+        )
 
 
 @admin_router.get("/pending", response_model=List[PendingTenant])
