@@ -18,6 +18,7 @@ from .db import init_db
 from .auth import router as auth_router
 from .auth import get_current_context, CurrentContext
 
+
 # -------------------------------------------------------------------
 # إعداد OAuth2 لقراءة التوكن من الهيدر Authorization
 # -------------------------------------------------------------------
@@ -77,8 +78,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
-JWT_ALG = "HS256"
+# JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
+# JWT_ALG = "HS256"
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
