@@ -10,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kubernetes import client, config
-from kubernetes.client.models import V1Subject
+
+#from kubernetes.client.models import V1Subject
 
 ...
 
