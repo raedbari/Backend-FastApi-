@@ -198,12 +198,12 @@ def approve(
     # تحميل إعدادات Kubernetes
     try:
         config.load_incluster_config()
-    except:
+    except Exception:
         config.load_kube_config()
 
     k8s = client.CoreV1Api()
 
-    # إنشاء Namespace
+    # إنشاء Namespace (idempotent)
     try:
         k8s.read_namespace(name=ns_name)
     except client.exceptions.ApiException as e:
@@ -211,11 +211,14 @@ def approve(
             ns_body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns_name))
             k8s.create_namespace(ns_body)
 
-    # إنشاء NetworkPolicy افتراضية
+    # إنشاء NetworkPolicy افتراضية (idempotent)
     net_api = client.NetworkingV1Api()
     policy = client.V1NetworkPolicy(
         metadata=client.V1ObjectMeta(name="default-deny", namespace=ns_name),
-        spec=client.V1NetworkPolicySpec(pod_selector={}, policy_types=["Ingress", "Egress"]),
+        spec=client.V1NetworkPolicySpec(
+            pod_selector={},
+            policy_types=["Ingress", "Egress"],
+        ),
     )
     try:
         net_api.create_namespaced_network_policy(ns_name, policy)
@@ -223,16 +226,18 @@ def approve(
         if e.status != 409:
             raise
 
-    # إنشاء ServiceAccount خاص بالـTenant
+    # إنشاء ServiceAccount خاص بالـTenant (idempotent)
     sa_name = "tenant-admin"
-    sa_body = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=sa_name, namespace=ns_name))
+    sa_body = client.V1ServiceAccount(
+        metadata=client.V1ObjectMeta(name=sa_name, namespace=ns_name)
+    )
     try:
         k8s.create_namespaced_service_account(namespace=ns_name, body=sa_body)
     except client.exceptions.ApiException as e:
         if e.status != 409:
             raise
 
-    # إنشاء Role محدود الصلاحيات
+    # إنشاء Role محدود الصلاحيات (idempotent)
     rbac_api = client.RbacAuthorizationV1Api()
     role_body = client.V1Role(
         metadata=client.V1ObjectMeta(name="tenant-admin-role", namespace=ns_name),
@@ -257,26 +262,18 @@ def approve(
         if e.status != 409:
             raise
 
-    # ربط الـServiceAccount بالـRole بطريقة متوافقة مع جميع نسخ Kubernetes Python client
-    try:
-        from kubernetes.client import V1Subject
-    except ImportError:
-        try:
-            from kubernetes.client.models import V1Subject
-        except ImportError:
-            class V1Subject:
-                def __init__(self, kind, name, namespace):
-                    self.kind = kind
-                    self.name = name
-                    self.namespace = namespace
-
+    # ربط الـSA بالـRole بدون V1Subject (باستخدام dict) — idempotent
     rb_body = client.V1RoleBinding(
         metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
-        subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
+        subjects=[{
+            "kind": "ServiceAccount",
+            "name": sa_name,
+            "namespace": ns_name,
+        }],
         role_ref=client.V1RoleRef(
+            api_group="rbac.authorization.k8s.io",
             kind="Role",
             name="tenant-admin-role",
-            api_group="rbac.authorization.k8s.io"
         ),
     )
     try:
@@ -285,12 +282,10 @@ def approve(
         if e.status != 409:
             raise
 
-    # تحديث قاعدة البيانات
+    # تحديث قاعدة البيانات + تشغيل التزويد الخلفي
     t.status = "active"
-    db.add(t)
-    db.commit()
-    db.add(ProvisioningRun(tenant_id=tenant_id, status="queued", retries=0))
-    db.commit()
+    db.add(t); db.commit()
+    db.add(ProvisioningRun(tenant_id=tenant_id, status="queued", retries=0)); db.commit()
 
     bg.add_task(_provision_tenant, tenant_id)
     _audit(db, t.id, "approve", actor=ctx.email)
@@ -304,7 +299,6 @@ def approve(
         "ok": True,
         "msg": f"Tenant '{t.name}' approved and namespace '{ns_name}' with SA created"
     }
-
 
 class RejectPayload(BaseModel):
     reason: Optional[str] = None
