@@ -335,3 +335,21 @@ def reject(
             raise
 
     return {"ok": True, "msg": f"Tenant '{t.name}' rejected and namespace '{t.k8s_namespace}' removed"}
+
+
+# to let the pending page know that the tenant have been approved 
+@router.get("/me/status")
+def get_my_tenant_status(
+    ctx: CurrentContext = Depends(get_current_context),
+    db: Session = Depends(get_db)
+):
+    # نحاول الحصول على التينانت من الـcontext
+    u = db.execute(select(User).where(User.email == ctx.email)).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404, "User not found")
+
+    tenant = db.get(Tenant, u.tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    return {"status": tenant.status}
