@@ -301,11 +301,15 @@ except client.exceptions.ApiException as e:
     _audit(db, t.id, "approve", actor=ctx.email)
 
     # إشعار المستخدم
+      # إشعار المستخدم
     u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
     if u:
         _send_email(u.email, "[Smart DevOps] Your account is approved", "You can sign in now.")
 
-    return {"ok": True, "msg": f"Tenant '{t.name}' approved and namespace '{ns_name}' with SA created"}
+    return {
+        "ok": True,
+        "msg": f"Tenant '{t.name}' approved and namespace '{ns_name}' with SA created"
+    }
 
 
 class RejectPayload(BaseModel):
