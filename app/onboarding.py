@@ -10,6 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kubernetes import client, config
+from kubernetes.client import V1Subject
+
+...
+
+subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
 
 from .db import get_db
 from .models import Tenant, User, AuditLog, ProvisioningRun
@@ -255,7 +260,7 @@ def approve(
     # ربط الـSA بالـRole
     rb_body = client.V1RoleBinding(
         metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
-       subjects=[client.V1RoleBindingSubject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
+        subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
 
         role_ref=client.V1RoleRef(
             kind="Role", name="tenant-admin-role", api_group="rbac.authorization.k8s.io"
