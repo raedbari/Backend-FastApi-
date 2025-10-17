@@ -178,7 +178,6 @@ def list_pending(ctx: CurrentContext = Depends(get_current_context), db: Session
 class ApprovePayload(BaseModel):
     pass
 
-
 @admin_router.post("/{tenant_id}/approve")
 def approve(
     tenant_id: int,
@@ -257,38 +256,33 @@ def approve(
         if e.status != 409:
             raise
 
-    # ربط الـSA بالـRole
- # ربط الـServiceAccount بالـRole بطريقة متوافقة مع جميع نسخ Kubernetes Python client
-try:
-    # نحاول استيراد V1Subject أولًا (في حال كان متوفرًا)
-    from kubernetes.client import V1Subject
-except ImportError:
+    # ربط الـServiceAccount بالـRole بطريقة متوافقة مع جميع نسخ Kubernetes Python client
     try:
-        # بعض النسخ تضعه داخل models
-        from kubernetes.client.models import V1Subject
+        from kubernetes.client import V1Subject
     except ImportError:
-        # fallback أخير: تعريف يدوي بسيط
-        class V1Subject(client.V1RoleBinding):
-            def __init__(self, kind, name, namespace):
-                self.kind = kind
-                self.name = name
-                self.namespace = namespace
+        try:
+            from kubernetes.client.models import V1Subject
+        except ImportError:
+            class V1Subject:
+                def __init__(self, kind, name, namespace):
+                    self.kind = kind
+                    self.name = name
+                    self.namespace = namespace
 
-# إنشاء الـRoleBinding
-rb_body = client.V1RoleBinding(
-    metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
-    subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
-    role_ref=client.V1RoleRef(
-        kind="Role",
-        name="tenant-admin-role",
-        api_group="rbac.authorization.k8s.io"
-    ),
-)
-try:
-    rbac_api.create_namespaced_role_binding(namespace=ns_name, body=rb_body)
-except client.exceptions.ApiException as e:
-    if e.status != 409:
-        raise
+    rb_body = client.V1RoleBinding(
+        metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
+        subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
+        role_ref=client.V1RoleRef(
+            kind="Role",
+            name="tenant-admin-role",
+            api_group="rbac.authorization.k8s.io"
+        ),
+    )
+    try:
+        rbac_api.create_namespaced_role_binding(namespace=ns_name, body=rb_body)
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
 
     # تحديث قاعدة البيانات
     t.status = "active"
@@ -301,7 +295,6 @@ except client.exceptions.ApiException as e:
     _audit(db, t.id, "approve", actor=ctx.email)
 
     # إشعار المستخدم
-      # إشعار المستخدم
     u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
     if u:
         _send_email(u.email, "[Smart DevOps] Your account is approved", "You can sign in now.")
