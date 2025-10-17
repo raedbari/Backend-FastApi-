@@ -258,19 +258,37 @@ def approve(
             raise
 
     # ربط الـSA بالـRole
-    rb_body = client.V1RoleBinding(
-        metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
-        subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
-
-        role_ref=client.V1RoleRef(
-            kind="Role", name="tenant-admin-role", api_group="rbac.authorization.k8s.io"
-        ),
-    )
+ # ربط الـServiceAccount بالـRole بطريقة متوافقة مع جميع نسخ Kubernetes Python client
+try:
+    # نحاول استيراد V1Subject أولًا (في حال كان متوفرًا)
+    from kubernetes.client import V1Subject
+except ImportError:
     try:
-        rbac_api.create_namespaced_role_binding(namespace=ns_name, body=rb_body)
-    except client.exceptions.ApiException as e:
-        if e.status != 409:
-            raise
+        # بعض النسخ تضعه داخل models
+        from kubernetes.client.models import V1Subject
+    except ImportError:
+        # fallback أخير: تعريف يدوي بسيط
+        class V1Subject(client.V1RoleBinding):
+            def __init__(self, kind, name, namespace):
+                self.kind = kind
+                self.name = name
+                self.namespace = namespace
+
+# إنشاء الـRoleBinding
+rb_body = client.V1RoleBinding(
+    metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
+    subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
+    role_ref=client.V1RoleRef(
+        kind="Role",
+        name="tenant-admin-role",
+        api_group="rbac.authorization.k8s.io"
+    ),
+)
+try:
+    rbac_api.create_namespaced_role_binding(namespace=ns_name, body=rb_body)
+except client.exceptions.ApiException as e:
+    if e.status != 409:
+        raise
 
     # تحديث قاعدة البيانات
     t.status = "active"
