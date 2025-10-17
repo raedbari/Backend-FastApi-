@@ -255,7 +255,8 @@ def approve(
     # ربط الـSA بالـRole
     rb_body = client.V1RoleBinding(
         metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
-        subjects=[client.V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
+       subjects=[client.V1RoleBindingSubject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
+
         role_ref=client.V1RoleRef(
             kind="Role", name="tenant-admin-role", api_group="rbac.authorization.k8s.io"
         ),
