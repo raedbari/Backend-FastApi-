@@ -15,7 +15,7 @@ from kubernetes import client, config
 
 ...
 
-subjects=[V1Subject(kind="ServiceAccount", name=sa_name, namespace=ns_name)],
+
 
 from .db import get_db
 from .models import Tenant, User, AuditLog, ProvisioningRun
