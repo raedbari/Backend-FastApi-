@@ -78,8 +78,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
-# JWT_ALG = "HS256"
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
     try:

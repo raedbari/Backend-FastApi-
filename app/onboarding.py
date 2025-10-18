@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 from kubernetes import client, config
 from app.auth import create_access_token
-
+import re
 from app.config import JWT_EXP_HOURS      # لو أردت استخدام القيمة العامة
 #from app.utils import _send_email, _send_webhook, _audit  # كما في كودك الحالي
 #from kubernetes.client.models import V1Subject
@@ -31,12 +31,24 @@ router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 WEBHOOK_URL = os.getenv("ONBOARDING_WEBHOOK_URL", "").strip()
 
+def sanitize_namespace(ns: str) -> str:
+    """
+    تنظيف اسم الـnamespace للتأكد من أنه متوافق مع قواعد Kubernetes.
+    """
+    ns = ns.strip().lower()
+    ns = re.sub(r'[^a-z0-9\-]', '-', ns)   # استبدال الأحرف غير المسموح بها بـ -
+    ns = re.sub(r'(^-+|-+$)', '', ns)      # إزالة الشرطات الزائدة
+    if not re.match(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', ns):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid namespace format")
+    return ns
+
+
 # ---------- Schemas ----------
 class RegisterPayload(BaseModel):
     company: str = Field(..., min_length=2, max_length=200)
     email: EmailStr
     password: str = Field(..., min_length=6, max_length=128)
-    namespace: str = Field(..., pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)
+    namespace: str = Field(..., min_length=2, max_length=63)
     note: Optional[str] = None
 
 
@@ -47,7 +59,7 @@ class PendingTenant(BaseModel):
     k8s_namespace: str
 
 
-# ---------- utilities ----------
+# ---------- الأدوات ----------
 def _send_email(to_email: str, subject: str, body: str) -> None:
     host = os.getenv("SMTP_HOST", "")
     user = os.getenv("SMTP_USER", "")
@@ -88,6 +100,50 @@ def _audit(db: Session, tenant_id: int, action: str, actor: str, result: str = "
     db.add(AuditLog(tenant_id=tenant_id, action=action, actor_email=actor, result=result))
     db.commit()
 
+def apply_quota_and_limits(ns: str):
+    """
+    تطبيق ResourceQuota و LimitRange على الـnamespace لضبط استهلاك الموارد.
+    """
+    try:
+        config.load_incluster_config()
+    except Exception:
+        config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    # 🔹 إنشاء ResourceQuota (تحديد الحد الأقصى)
+    rq_body = client.V1ResourceQuota(
+        metadata=client.V1ObjectMeta(name="tenant-quota", namespace=ns),
+        spec=client.V1ResourceQuotaSpec(hard={
+            "requests.cpu": "2",
+            "requests.memory": "4Gi",
+            "limits.cpu": "4",
+            "limits.memory": "8Gi",
+            "pods": "20"
+        })
+    )
+    try:
+        v1.create_namespaced_resource_quota(ns, rq_body)
+    except client.exceptions.ApiException as e:
+        if e.status != 409:  # 409 = موجود مسبقاً
+            raise
+
+    # 🔹 إنشاء LimitRange (تحديد القيم الافتراضية لكل Container)
+    lr_body = client.V1LimitRange(
+        metadata=client.V1ObjectMeta(name="tenant-limits", namespace=ns),
+        spec=client.V1LimitRangeSpec(limits=[
+            client.V1LimitRangeItem(
+                type="Container",
+                default={"cpu": "500m", "memory": "512Mi"},
+                default_request={"cpu": "100m", "memory": "256Mi"},
+            )
+        ])
+    )
+    try:
+        v1.create_namespaced_limit_range(ns, lr_body)
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
 
 # ---------- background task ----------
 def _provision_tenant(tenant_id: int):
@@ -121,17 +177,21 @@ def _provision_tenant(tenant_id: int):
     finally:
         db.close()
 
-
 # ---------- public endpoints ----------
-
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
+    # 🔹 Sanitization للـnamespace
+    try:
+        clean_ns = sanitize_namespace(payload.namespace)
+    except HTTPException as e:
+        raise e
+
     existing = db.execute(select(Tenant).where(Tenant.name == payload.company)).scalar_one_or_none()
     if existing:
         raise HTTPException(409, detail="Company already exists")
 
     # إنشاء Tenant جديد
-    t = Tenant(name=payload.company, k8s_namespace=payload.namespace, status="pending")
+    t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
     db.add(t)
     db.commit()
     db.refresh(t)
@@ -148,7 +208,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         _send_email(
             ADMIN_EMAIL,
             f"[Smart DevOps] New tenant request: {payload.company}",
-            f"Tenant: {payload.company}\nNamespace: {payload.namespace}\nAdmin: {payload.email}",
+            f"Tenant: {payload.company}\nNamespace: {clean_ns}\nAdmin: {payload.email}",
         )
     _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
 
@@ -161,7 +221,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     token = create_access_token(
         sub=admin.email,
         tid=t.id,
-        ns=None,  # لا يملك namespace بعد
+        ns=None,
         role="pending_user",
     )
 
@@ -171,9 +231,6 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         "access_token": token,
         "token_type": "bearer"
     }
-# ---------- admin endpoints ----------
-admin_router = APIRouter(prefix="/admin/tenants", tags=["admin"])
-
 
 def _ensure_admin(ctx: CurrentContext):
     """
@@ -234,6 +291,7 @@ def approve(
         if e.status == 404:
             ns_body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns_name))
             k8s.create_namespace(ns_body)
+    apply_quota_and_limits(ns_name)
 
     # إنشاء NetworkPolicy افتراضية (idempotent)
     net_api = client.NetworkingV1Api()
