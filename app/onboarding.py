@@ -10,8 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kubernetes import client, config
+from app.auth import create_access_token
 
-from app.auth import create_access_token  # ← لاحظ هنا الاسم الصحيح
 from app.config import JWT_EXP_HOURS      # لو أردت استخدام القيمة العامة
 #from app.utils import _send_email, _send_webhook, _audit  # كما في كودك الحالي
 #from kubernetes.client.models import V1Subject
