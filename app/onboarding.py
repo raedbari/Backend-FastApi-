@@ -232,6 +232,8 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         "token_type": "bearer"
     }
 
+admin_router = APIRouter(prefix="/admin/tenants", tags=["admin"])
+
 def _ensure_admin(ctx: CurrentContext):
     """
     يُسمح فقط للمستخدم الذي يحمل الدور platform_admin بالوصول إلى هذه المسارات.
