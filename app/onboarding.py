@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session
 
 from kubernetes import client, config
 
+from app.auth import create_access_token  # ← لاحظ هنا الاسم الصحيح
+from app.config import JWT_EXP_HOURS      # لو أردت استخدام القيمة العامة
+from app.utils import _send_email, _send_webhook, _audit  # كما في كودك الحالي
 #from kubernetes.client.models import V1Subject
 
 ...
@@ -119,22 +122,27 @@ def _provision_tenant(tenant_id: int):
 
 
 # ---------- public endpoints ----------
+
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
     existing = db.execute(select(Tenant).where(Tenant.name == payload.company)).scalar_one_or_none()
     if existing:
         raise HTTPException(409, detail="Company already exists")
 
+    # إنشاء Tenant جديد
     t = Tenant(name=payload.company, k8s_namespace=payload.namespace, status="pending")
     db.add(t)
     db.commit()
     db.refresh(t)
 
+    # إنشاء مستخدم Admin للتينانت
     pwd_hash = pbkdf2_sha256.hash(payload.password)
-    admin = User(email=payload.email, password_hash=pwd_hash, role="admin", tenant_id=t.id)
+    admin = User(email=payload.email, password_hash=pwd_hash, role="pending_user", tenant_id=t.id)
     db.add(admin)
     db.commit()
+    db.refresh(admin)
 
+    # إشعار المسؤول
     if ADMIN_EMAIL:
         _send_email(
             ADMIN_EMAIL,
@@ -144,9 +152,24 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
 
     _audit(db, t.id, "register", actor=payload.email)
-    return {"ok": True}
 
+    # ✅ إنشاء توكن مؤقت مدته 15 دقيقة فقط
+    now = datetime.utcnow()
+    temp_exp = now + timedelta(minutes=15)
 
+    token = create_access_token(
+        sub=admin.email,
+        tid=t.id,
+        ns=None,  # لا يملك namespace بعد
+        role="pending_user",
+    )
+
+    return {
+        "ok": True,
+        "msg": "Tenant registered successfully. Pending approval.",
+        "access_token": token,
+        "token_type": "bearer"
+    }
 # ---------- admin endpoints ----------
 admin_router = APIRouter(prefix="/admin/tenants", tags=["admin"])
 
