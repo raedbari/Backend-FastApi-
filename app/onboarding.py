@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from datetime import datetime, timedelta
 
 from kubernetes import client, config
 from app.auth import create_access_token
