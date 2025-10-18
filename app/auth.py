@@ -17,11 +17,11 @@ from .models import User, Tenant
 # ----------------------------
 # إعدادات JWT
 # ----------------------------
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET:
-    raise ValueError("JWT_SECRET is not set in environment variables!")
-JWT_ALG = "HS256"
-JWT_EXP_HOURS = int(os.getenv("JWT_EXP_HOURS", "12"))
+# JWT_SECRET = os.getenv("JWT_SECRET")
+# if not JWT_SECRET:
+#     raise ValueError("JWT_SECRET is not set in environment variables!")
+# JWT_ALG = "HS256"
+# JWT_EXP_HOURS = int(os.getenv("JWT_EXP_HOURS", "12"))
 
 
 # ----------------------------
