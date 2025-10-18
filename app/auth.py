@@ -10,18 +10,11 @@ from fastapi import Depends, HTTPException, status, APIRouter
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-
 from .db import get_db
 from .models import User, Tenant
 
-# ----------------------------
-# إعدادات JWT
-# ----------------------------
-# JWT_SECRET = os.getenv("JWT_SECRET")
-# if not JWT_SECRET:
-#     raise ValueError("JWT_SECRET is not set in environment variables!")
-# JWT_ALG = "HS256"
-# JWT_EXP_HOURS = int(os.getenv("JWT_EXP_HOURS", "12"))
+# ✅ استيراد إعدادات الـJWT من config المركزي
+from app.config import JWT_SECRET, JWT_ALG, JWT_EXP_HOURS
 
 
 # ----------------------------
@@ -153,7 +146,7 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
     if not tenant:
         return None
 
-    # 👈 التعديل هنا: اسمح لـ platform_admin بالدخول حتى لو الحالة ليست active
+    # 👈 اسمح لـ platform_admin بالدخول حتى لو حالة التينانت ليست active
     if tenant.status != "active" and (user.role or "user") != "platform_admin":
         msg = "Forbidden"
         if tenant.status == "pending":
@@ -204,7 +197,12 @@ def get_current_context(
         role = payload.get("role") or "user"
         if not email or tid is None:
             raise ValueError("bad claims")
-        return CurrentContext(email=email, role=role, tenant_id=int(tid), k8s_namespace=(None if ns is None else str(ns)))
+        return CurrentContext(
+            email=email,
+            role=role,
+            tenant_id=int(tid),
+            k8s_namespace=(None if ns is None else str(ns)),
+        )
     except (JWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
