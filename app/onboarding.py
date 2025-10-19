@@ -251,11 +251,23 @@ def list_pending(ctx: CurrentContext = Depends(get_current_context), db: Session
     _ensure_admin(ctx)
     rows = db.execute(select(Tenant).where(Tenant.status == "pending")).scalars().all()
     out: List[PendingTenant] = []
+
     for t in rows:
         u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
+        
+        # 👇 التحقق قبل الإضافة
+        if not u:
+            continue  # تخطي أي tenant ليس لديه مستخدم
+
         out.append(
-            PendingTenant(id=t.id, name=t.name, email=u.email if u else "", k8s_namespace=t.k8s_namespace)
+            PendingTenant(
+                id=t.id,
+                name=t.name,
+                email=u.email,
+                k8s_namespace=t.k8s_namespace
+            )
         )
+
     return out
 
 
