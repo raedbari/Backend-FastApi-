@@ -180,45 +180,60 @@ def _provision_tenant(tenant_id: int):
 # ---------- public endpoints ----------
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
+    # 🔹 Sanitization للـnamespace
     try:
         clean_ns = sanitize_namespace(payload.namespace)
     except HTTPException as e:
         raise e
 
-    # 🔹 تحقق من وجود نفس الاسم أو الـ namespace حتى لو كان مرفوضًا
-    existing = db.execute(
-        select(Tenant).where(Tenant.name == payload.company)
-    ).scalar_one_or_none()
+    # ✅ 1. حذف أي tenant مرفوض سابقًا بنفس الاسم أو الـnamespace
+    rejected_tenants = db.execute(
+        select(Tenant).where(
+            or_(
+                Tenant.name == payload.company,
+                Tenant.k8s_namespace == clean_ns
+            ),
+            Tenant.status == "rejected"
+        )
+    ).scalars().all()
 
-    existing_ns = db.execute(
-        select(Tenant).where(Tenant.k8s_namespace == clean_ns)
+    for t in rejected_tenants:
+        # حذف كل السجلات التابعة له أولًا لتجنب قيود المفاتيح الأجنبية
+        db.execute(delete(AuditLog).where(AuditLog.tenant_id == t.id))
+        db.execute(delete(ProvisioningRun).where(ProvisioningRun.tenant_id == t.id))
+        db.execute(delete(User).where(User.tenant_id == t.id))
+        db.delete(t)
+    if rejected_tenants:
+        db.commit()
+
+    # ✅ 2. التحقق من وجود اسم الشركة أو namespace لمستخدم نشط أو قيد الانتظار
+    existing = db.execute(
+        select(Tenant).where(
+            or_(
+                Tenant.name == payload.company,
+                Tenant.k8s_namespace == clean_ns
+            ),
+            Tenant.status != "rejected"
+        )
     ).scalar_one_or_none()
 
     if existing:
-        if existing.status == "rejected":
-            # حذف القديم ونعيد التسجيل
-            db.delete(existing)
-            db.commit()
-        else:
-            raise HTTPException(409, detail="Company already exists")
+        raise HTTPException(409, detail="Company or namespace already exists")
 
-    elif existing_ns:
-        raise HTTPException(409, detail="Namespace already exists")
-
-    # إنشاء Tenant جديد
+    # ✅ 3. إنشاء Tenant جديد
     t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
     db.add(t)
     db.commit()
     db.refresh(t)
 
-    # إنشاء مستخدم Admin
+    # ✅ 4. إنشاء المستخدم المرتبط
     pwd_hash = pbkdf2_sha256.hash(payload.password)
     admin = User(email=payload.email, password_hash=pwd_hash, role="pending_user", tenant_id=t.id)
     db.add(admin)
     db.commit()
     db.refresh(admin)
 
-    # إشعار المسؤول
+    # ✅ 5. إشعار الإدارة
     if ADMIN_EMAIL:
         _send_email(
             ADMIN_EMAIL,
@@ -229,6 +244,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
     _audit(db, t.id, "register", actor=payload.email)
 
+    # ✅ 6. إنشاء التوكن المؤقت
     token = create_access_token(
         sub=admin.email,
         tid=t.id,
