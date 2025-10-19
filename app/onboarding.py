@@ -186,35 +186,47 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     except HTTPException as e:
         raise e
 
-    existing = db.execute(select(Tenant).where(Tenant.name == payload.company)).scalar_one_or_none()
+    # 🔹 التحقق من أن الشركة غير موجودة مسبقًا (إلا إذا كانت مرفوضة)
+    existing = db.execute(
+        select(Tenant).where(
+            Tenant.name == payload.company,
+            Tenant.status != "rejected"
+        )
+    ).scalar_one_or_none()
+
     if existing:
         raise HTTPException(409, detail="Company already exists")
 
-    # إنشاء Tenant جديد
+    # 🔹 إنشاء Tenant جديد
     t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
     db.add(t)
     db.commit()
     db.refresh(t)
 
-    # إنشاء مستخدم Admin للتينانت
+    # 🔹 إنشاء مستخدم Admin للتينانت
     pwd_hash = pbkdf2_sha256.hash(payload.password)
-    admin = User(email=payload.email, password_hash=pwd_hash, role="pending_user", tenant_id=t.id)
+    admin = User(
+        email=payload.email,
+        password_hash=pwd_hash,
+        role="pending_user",
+        tenant_id=t.id
+    )
     db.add(admin)
     db.commit()
     db.refresh(admin)
 
-    # إشعار المسؤول
+    # 🔹 إشعار المسؤول
     if ADMIN_EMAIL:
         _send_email(
             ADMIN_EMAIL,
             f"[Smart DevOps] New tenant request: {payload.company}",
             f"Tenant: {payload.company}\nNamespace: {clean_ns}\nAdmin: {payload.email}",
         )
-    _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
 
+    _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
     _audit(db, t.id, "register", actor=payload.email)
 
-    # ✅ إنشاء توكن مؤقت مدته 15 دقيقة فقط
+    # ✅ إنشاء توكن مؤقت
     now = datetime.utcnow()
     temp_exp = now + timedelta(minutes=15)
 
