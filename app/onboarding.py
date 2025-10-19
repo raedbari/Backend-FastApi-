@@ -180,42 +180,45 @@ def _provision_tenant(tenant_id: int):
 # ---------- public endpoints ----------
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
-    # 🔹 Sanitization للـnamespace
     try:
         clean_ns = sanitize_namespace(payload.namespace)
     except HTTPException as e:
         raise e
 
-    # 🔹 التحقق من أن الشركة غير موجودة مسبقًا (إلا إذا كانت مرفوضة)
+    # 🔹 تحقق من وجود نفس الاسم أو الـ namespace حتى لو كان مرفوضًا
     existing = db.execute(
-        select(Tenant).where(
-            Tenant.name == payload.company,
-            Tenant.status != "rejected"
-        )
+        select(Tenant).where(Tenant.name == payload.company)
+    ).scalar_one_or_none()
+
+    existing_ns = db.execute(
+        select(Tenant).where(Tenant.k8s_namespace == clean_ns)
     ).scalar_one_or_none()
 
     if existing:
-        raise HTTPException(409, detail="Company already exists")
+        if existing.status == "rejected":
+            # حذف القديم ونعيد التسجيل
+            db.delete(existing)
+            db.commit()
+        else:
+            raise HTTPException(409, detail="Company already exists")
 
-    # 🔹 إنشاء Tenant جديد
+    elif existing_ns:
+        raise HTTPException(409, detail="Namespace already exists")
+
+    # إنشاء Tenant جديد
     t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
     db.add(t)
     db.commit()
     db.refresh(t)
 
-    # 🔹 إنشاء مستخدم Admin للتينانت
+    # إنشاء مستخدم Admin
     pwd_hash = pbkdf2_sha256.hash(payload.password)
-    admin = User(
-        email=payload.email,
-        password_hash=pwd_hash,
-        role="pending_user",
-        tenant_id=t.id
-    )
+    admin = User(email=payload.email, password_hash=pwd_hash, role="pending_user", tenant_id=t.id)
     db.add(admin)
     db.commit()
     db.refresh(admin)
 
-    # 🔹 إشعار المسؤول
+    # إشعار المسؤول
     if ADMIN_EMAIL:
         _send_email(
             ADMIN_EMAIL,
@@ -225,10 +228,6 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
 
     _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
     _audit(db, t.id, "register", actor=payload.email)
-
-    # ✅ إنشاء توكن مؤقت
-    now = datetime.utcnow()
-    temp_exp = now + timedelta(minutes=15)
 
     token = create_access_token(
         sub=admin.email,
