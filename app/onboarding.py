@@ -16,6 +16,7 @@ import re
 from app.config import JWT_EXP_HOURS      # لو أردت استخدام القيمة العامة
 #from app.utils import _send_email, _send_webhook, _audit  # كما في كودك الحالي
 #from kubernetes.client.models import V1Subject
+from sqlalchemy import select, or_, delete
 
 ...
 
