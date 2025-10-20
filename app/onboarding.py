@@ -181,13 +181,13 @@ def _provision_tenant(tenant_id: int):
 # ---------- public endpoints ----------
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
-    # 🔹 Sanitization للـnamespace
+    # 🔹 1. تنظيف الـ namespace
     try:
         clean_ns = sanitize_namespace(payload.namespace)
     except HTTPException as e:
         raise e
 
-    # ✅ 1. حذف أي tenant مرفوض سابقًا بنفس الاسم أو الـnamespace
+    # 🔹 2. حذف أي tenant مرفوض بنفس الاسم أو namespace
     rejected_tenants = db.execute(
         select(Tenant).where(
             or_(
@@ -199,7 +199,6 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     ).scalars().all()
 
     for t in rejected_tenants:
-        # حذف كل السجلات التابعة له أولًا لتجنب قيود المفاتيح الأجنبية
         db.execute(delete(AuditLog).where(AuditLog.tenant_id == t.id))
         db.execute(delete(ProvisioningRun).where(ProvisioningRun.tenant_id == t.id))
         db.execute(delete(User).where(User.tenant_id == t.id))
@@ -207,7 +206,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     if rejected_tenants:
         db.commit()
 
-    # ✅ 2. التحقق من وجود اسم الشركة أو namespace لمستخدم نشط أو قيد الانتظار
+    # 🔹 3. التحقق من وجود Tenant نشط أو قيد الانتظار
     existing = db.execute(
         select(Tenant).where(
             or_(
@@ -221,20 +220,33 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     if existing:
         raise HTTPException(409, detail="Company or namespace already exists")
 
-    # ✅ 3. إنشاء Tenant جديد
-    t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
-    db.add(t)
-    db.commit()
-    db.refresh(t)
+    # 🔹 4. إنشاء tenant والمستخدم داخل معاملة واحدة لضمان التزامن
+    try:
+        # إنشاء Tenant جديد
+        t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
+        db.add(t)
+        db.flush()  # نحصل على ID بدون commit بعد
 
-    # ✅ 4. إنشاء المستخدم المرتبط
-    pwd_hash = pbkdf2_sha256.hash(payload.password)
-    admin = User(email=payload.email, password_hash=pwd_hash, role="pending_user", tenant_id=t.id)
-    db.add(admin)
-    db.commit()
-    db.refresh(admin)
+        # إنشاء المستخدم
+        pwd_hash = pbkdf2_sha256.hash(payload.password)
+        admin = User(
+            email=payload.email,
+            password_hash=pwd_hash,
+            role="pending_user",
+            tenant_id=t.id
+        )
+        db.add(admin)
 
-    # ✅ 5. إشعار الإدارة
+        # الآن فقط نُثبّت العملية في القاعدة
+        db.commit()
+        db.refresh(t)
+        db.refresh(admin)
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, detail=f"Registration failed: {str(e)}")
+
+    # 🔹 5. إشعار الإدارة
     if ADMIN_EMAIL:
         _send_email(
             ADMIN_EMAIL,
@@ -245,7 +257,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
     _audit(db, t.id, "register", actor=payload.email)
 
-    # ✅ 6. إنشاء التوكن المؤقت
+    # 🔹 6. إنشاء التوكن المؤقت
     token = create_access_token(
         sub=admin.email,
         tid=t.id,
