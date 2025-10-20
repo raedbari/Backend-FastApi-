@@ -10,28 +10,22 @@ Kubernetes operations for our platform:
 NOTE: For patch operations we pass typed Kubernetes objects (V1Deployment / V1Service)
 not raw dicts, so the serializer emits proper camelCase (containerPort, targetPort, …).
 """
-
 from __future__ import annotations
-from typing import Dict, List  # Optional محذوف لأنه غير مستخدم في هذا الجزء
+from typing import Dict, List
 
 from kubernetes import client
-
-# توحيد استيراد ApiException بما يدعم kubernetes >= 28 و < 28
 try:
-    # kubernetes >= 28
-    from kubernetes.client.exceptions import ApiException  # type: ignore
-except Exception:  # pragma: no cover
-    # kubernetes < 28
-    from kubernetes.client.rest import ApiException  # type: ignore
+    from kubernetes.client.exceptions import ApiException  # kubernetes >= 28
+except Exception:
+    from kubernetes.client.rest import ApiException  # kubernetes < 28
 
 from .k8s_client import get_api_clients, get_namespace, platform_labels
-# استيراد Status* محذوف لأنه غير مستخدم في هذا الجزء
-# from .models import AppSpec, StatusItem, StatusResponse
 from .models import AppSpec, StatusItem, StatusResponse
 
-# ملاحظة: تمت إزالة الكتلة الكبيرة _container_from_spec لأنها كانت مُعلقة بالكامل (commented-out)
-# وغير مستخدمة فعليًا. إذا احتجناها مستقبلًا سنعيد تقديم نسخة مبسطة ومستخدمة.
 
+# ============================================================
+# 🧩  إنشاء أو تحديث الـ Deployment
+# ============================================================
 def upsert_deployment(spec: AppSpec) -> dict:
     ns   = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
@@ -39,16 +33,13 @@ def upsert_deployment(spec: AppSpec) -> dict:
     name   = spec.effective_app_label
     port   = spec.effective_port
     path   = spec.effective_health_path
-    labels = platform_labels({"app": name, "role": "active"})  # توحيد اللّيبلز
+    labels = platform_labels({"app": name, "role": "active"})
 
-    # ---- SecurityContext ديناميكي (compat_mode / run_as_non_root / run_as_user) ----
     sc = client.V1SecurityContext(allow_privilege_escalation=False)
     if not getattr(spec, "compat_mode", False) and getattr(spec, "run_as_non_root", True):
         sc.run_as_non_root = True
         sc.run_as_user = getattr(spec, "run_as_user", None) or 1001
-    # else: نترك الصورة تعمل بإعداداتها (قد تكون root)
 
-    # ---- موارد افتراضية خفيفة (وتُستبدَل إن مرّر المستخدم موارد) ----
     default_resources = {
         "requests": {"cpu": "20m", "memory": "64Mi"},
         "limits":   {"cpu": "200m", "memory": "256Mi"},
@@ -59,7 +50,6 @@ def upsert_deployment(spec: AppSpec) -> dict:
         limits=res.get("limits",   default_resources["limits"]),
     )
 
-    # ---- الحاوية (بدون startupProbe افتراضيًا) ----
     container = client.V1Container(
         name=name,
         image=(f"{spec.image}:{spec.tag}" if getattr(spec, "tag", None) else spec.image),
@@ -110,22 +100,77 @@ def upsert_deployment(spec: AppSpec) -> dict:
     return resp.to_dict()
 
 
+# ============================================================
+# 🌐  إنشاء Ingress تلقائيًا
+# ============================================================
+def create_ingress_for_app(app_name: str, namespace: str):
+    net_api = get_api_clients()["networking"]
+
+    ingress_manifest = client.V1Ingress(
+        api_version="networking.k8s.io/v1",
+        kind="Ingress",
+        metadata=client.V1ObjectMeta(
+            name=f"{app_name}-ingress",
+            annotations={
+                "kubernetes.io/ingress.class": "nginx",
+                "cert-manager.io/cluster-issuer": "letsencrypt-prod",
+            },
+        ),
+        spec=client.V1IngressSpec(
+            tls=[
+                client.V1IngressTLS(
+                    hosts=[f"{app_name}.{namespace}.apps.rango-project.duckdns.org"],
+                    secret_name=f"{app_name}-tls"
+                )
+            ],
+            rules=[
+                client.V1IngressRule(
+                    host=f"{app_name}.{namespace}.apps.rango-project.duckdns.org",
+                    http=client.V1HTTPIngressRuleValue(
+                        paths=[
+                            client.V1HTTPIngressPath(
+                                path="/",
+                                path_type="Prefix",
+                                backend=client.V1IngressBackend(
+                                    service=client.V1IngressServiceBackend(
+                                        name=app_name,
+                                        port=client.V1ServiceBackendPort(number=80),
+                                    )
+                                ),
+                            )
+                        ]
+                    ),
+                )
+            ],
+        ),
+    )
+
+    try:
+        net_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
+        print(f"✅ Ingress created for {app_name} in {namespace}")
+    except ApiException as e:
+        if getattr(e, "status", None) == 409:
+            print(f"⚠️ Ingress {app_name}-ingress already exists.")
+        else:
+            raise
+
+
+# ============================================================
+# ⚙️  إنشاء أو تحديث الـ Service
+# ============================================================
 def upsert_service(spec: AppSpec) -> dict:
     ns   = spec.namespace or get_namespace()
     core = get_api_clients()["core"]
 
-    # عرّف القيم أولاً
     app_label = spec.effective_app_label
     svc_name  = spec.effective_service_name
     port      = spec.effective_port
 
-    # الخدمة دائمًا توجه الـ active
     labels   = platform_labels({"app": app_label, "role": "active"})
     selector = {"app": app_label, "role": "active"}
 
     try:
         existing = core.read_namespaced_service(name=svc_name, namespace=ns)
-
         svc_type     = existing.spec.type or "ClusterIP"
         cluster_port = (existing.spec.ports[0].port if existing.spec.ports else port)
         node_port    = None
@@ -136,7 +181,7 @@ def upsert_service(spec: AppSpec) -> dict:
             api_version="v1",
             metadata=client.V1ObjectMeta(labels=labels),
             spec=client.V1ServiceSpec(
-                selector=selector,   # ملاحظة: لا تستخدم V1LabelSelector هنا
+                selector=selector,
                 type=svc_type,
                 ports=[client.V1ServicePort(
                     name="http",
@@ -164,6 +209,9 @@ def upsert_service(spec: AppSpec) -> dict:
             resp = core.create_namespaced_service(namespace=ns, body=create_body)
         else:
             raise
+
+    # 🆕 بعد إنشاء الخدمة بنجاح، ننشئ الـIngress تلقائيًا
+    create_ingress_for_app(app_label, ns)
 
     return resp.to_dict()
 
@@ -606,4 +654,5 @@ def create_tenant_namespace(ns: str) -> dict:
             raise
 
     return {"ok": True, "namespace": ns, "created": created}
+
 
