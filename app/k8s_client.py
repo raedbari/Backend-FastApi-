@@ -31,15 +31,17 @@ def _load_config() -> k8s_client.ApiClient:
 def get_api_clients() -> Dict[str, object]:
     """
     Return commonly used Kubernetes API clients:
-      - 'apps'   -> AppsV1Api
-      - 'core'   -> CoreV1Api
-      - 'custom' -> CustomObjectsApi
+      - 'apps'        -> AppsV1Api
+      - 'core'        -> CoreV1Api
+      - 'custom'      -> CustomObjectsApi
+      - 'networking'  -> NetworkingV1Api (used for Ingress)
     """
     api = _load_config()
     return {
         "apps": k8s_client.AppsV1Api(api),
         "core": k8s_client.CoreV1Api(api),
         "custom": k8s_client.CustomObjectsApi(api),
+        "networking": k8s_client.NetworkingV1Api(api),  # ✅ أُضيف هنا
     }
 
 
@@ -87,4 +89,3 @@ def platform_labels(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     if extra:
         base.update(extra)
     return base
-

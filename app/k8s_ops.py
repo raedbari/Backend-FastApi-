@@ -103,6 +103,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
 # ============================================================
 # 🌐  إنشاء Ingress تلقائيًا
 # ============================================================
+
 def create_ingress_for_app(app_name: str, namespace: str):
     net_api = get_api_clients()["networking"]
 
