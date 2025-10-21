@@ -52,9 +52,9 @@ def init_db():
             db.flush()  # عشان نأخذ tenant.id بعد الإدراج مباشرة
 
             admin_user = User(
-                email="demo1@local.com",
-                password_hash = pbkdf2_sha256.hash("demo123"),  # كلمة مرور بسيطة للاختبار
-                role="admin",
+                email="raedbari@lgmail.com",
+                password_hash = pbkdf2_sha256.hash("adminadmin"),  # كلمة مرور بسيطة للاختبار
+                role="platform_admin",
                 tenant_id=tenant.id,
             )
             db.add(admin_user)
