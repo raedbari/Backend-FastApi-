@@ -246,7 +246,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         db.rollback()
         raise HTTPException(500, detail=f"Registration failed: {str(e)}")
 
-    # 🔹 5. إشعار الإدارة
+    # 🔹 5. إشعار الإدار
     if ADMIN_EMAIL:
         _send_email(
             ADMIN_EMAIL,
