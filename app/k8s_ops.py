@@ -175,10 +175,8 @@ def create_ingress_for_app(app_name: str, namespace: str):
         else:
             raise
 
-
-
 # ============================================================
-# ⚙️  إنشاء أو تحديث الـ Service
+# ⚙️  إنشاء أو تحديث الـ Service + Ingress تلقائيًا
 # ============================================================
 def upsert_service(spec: AppSpec) -> dict:
     ns   = spec.namespace or get_namespace()
@@ -192,6 +190,7 @@ def upsert_service(spec: AppSpec) -> dict:
     selector = {"app": app_label, "role": "active"}
 
     try:
+        # ✅ محاولة قراءة الـService الحالي
         existing = core.read_namespaced_service(name=svc_name, namespace=ns)
         svc_type     = existing.spec.type or "ClusterIP"
         cluster_port = (existing.spec.ports[0].port if existing.spec.ports else port)
@@ -199,6 +198,7 @@ def upsert_service(spec: AppSpec) -> dict:
         if svc_type == "NodePort" and existing.spec.ports:
             node_port = existing.spec.ports[0].node_port
 
+        # 🔄 تحديث الخدمة (patch)
         patch_body = client.V1Service(
             api_version="v1",
             metadata=client.V1ObjectMeta(labels=labels),
@@ -215,9 +215,11 @@ def upsert_service(spec: AppSpec) -> dict:
             )
         )
         resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
+        print(f"🔄 Service {svc_name} updated in {ns}")
 
     except ApiException as e:
         if getattr(e, "status", None) == 404:
+            # 🆕 إنشاء جديد
             create_body = client.V1Service(
                 api_version="v1",
                 kind="Service",
@@ -225,15 +227,24 @@ def upsert_service(spec: AppSpec) -> dict:
                 spec=client.V1ServiceSpec(
                     type="ClusterIP",
                     selector=selector,
-                    ports=[client.V1ServicePort(name="http", port=port, target_port=port, protocol="TCP")]
+                    ports=[client.V1ServicePort(
+                        name="http",
+                        port=port,
+                        target_port=port,
+                        protocol="TCP"
+                    )]
                 )
             )
             resp = core.create_namespaced_service(namespace=ns, body=create_body)
+            print(f"✅ Service {svc_name} created in {ns}")
         else:
             raise
 
-    # 🆕 بعد إنشاء الخدمة بنجاح، ننشئ الـIngress تلقائيًا
-    create_ingress_for_app(app_label, ns)
+    # 🧠 بعد إنشاء أو تحديث الخدمة بنجاح → أنشئ أو حدّث الـIngress تلقائيًا
+    try:
+        create_ingress_for_app(app_label, ns)
+    except Exception as e:
+        print(f"⚠️ Failed to create/update Ingress for {app_label}: {e}")
 
     return resp.to_dict()
 
