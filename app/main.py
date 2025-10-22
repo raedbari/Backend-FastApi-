@@ -32,9 +32,6 @@ class User(BaseModel):
     namespace: str
     role: str | None = None
 
-
-
-
 class NameNS(BaseModel):
     name: str
     namespace: str | None = None  # متروكة للتوافق فقط؛ تُتجاهل
@@ -259,8 +256,6 @@ def _startup():
 app.include_router(onboarding_router, prefix="/api")
 app.include_router(onboarding_admin_router, prefix="/api")
 router = APIRouter(prefix="/auth")
-
-
 
 # -------------------------------------------------------------------
 # 🔒 Namespace access guard (centralized)

@@ -197,10 +197,22 @@ def create_ingress_for_app(app_name: str, namespace: str):
         raise
 
 # ============================================================
-# ⚙️  إنشاء أو تحديث الـ Service + Ingress تلقائيًا
+# ⚙️  إنشاء أو تحديث الـ Service + Ingress تلقائيًا (نسخة محسّنة)
 # ============================================================
-def upsert_service(spec: AppSpec) -> dict:
-    ns   = spec.namespace or get_namespace()
+def upsert_service(spec: AppSpec, ctx: "CurrentContext" = None) -> dict:
+    """
+    - تنشئ أو تحدّث الـService في الـnamespace الخاص بالمستخدم (من JWT).
+    - ثم تنشئ تلقائيًا Ingress بنفس الـnamespace مع TLS.
+    """
+    # 🔒 استخدم namespace من السياق (JWT) أولاً
+    ns = None
+    if ctx and getattr(ctx, "k8s_namespace", None):
+        ns = ctx.k8s_namespace
+    elif getattr(spec, "namespace", None):
+        ns = spec.namespace
+    else:
+        ns = get_namespace()  # fallback فقط، لا يُفضّل استخدامها
+
     core = get_api_clients()["core"]
 
     app_label = spec.effective_app_label
@@ -263,9 +275,10 @@ def upsert_service(spec: AppSpec) -> dict:
 
     # 🧠 بعد إنشاء أو تحديث الخدمة بنجاح → أنشئ أو حدّث الـIngress تلقائيًا
     try:
+        print(f"🚀 Creating ingress for {app_label} in namespace {ns}")
         create_ingress_for_app(app_label, ns)
     except Exception as e:
-        print(f"⚠️ Failed to create/update Ingress for {app_label}: {e}")
+        print(f"⚠️ Failed to create/update Ingress for {app_label} in {ns}: {e}")
 
     return resp.to_dict()
 
