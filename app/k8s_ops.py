@@ -99,34 +99,53 @@ def upsert_deployment(spec: AppSpec) -> dict:
             raise
     return resp.to_dict()
 
-
 # ============================================================
-# 🌐  إنشاء Ingress تلقائيًا
+# 🌐 إنشاء Ingress تلقائيًا (إصدار محسّن — يكتشف المنفذ تلقائيًا)
 # ============================================================
+from kubernetes import client
+from kubernetes.client.rest import ApiException
+from .k8s_client import get_api_clients  # لو عندك دالة get_api_clients موجودة
 
 def create_ingress_for_app(app_name: str, namespace: str):
-    net_api = get_api_clients()["networking"]
+    clients = get_api_clients()
+    net_api = clients["networking"]
+    core_api = clients["core"]
+
+    host = f"{app_name}.{namespace}.apps.smartdevops.lat"
+    ingress_name = f"{app_name}-ingress"
+
+    # ✅ أولاً: نكتشف المنفذ من الـService (بدون ما نثبّت 80)
+    try:
+        svc = core_api.read_namespaced_service(app_name, namespace)
+        if not svc.spec.ports:
+            print(f"⚠️ Service {app_name} لا يحتوي على أي منافذ! سيتم استخدام المنفذ 80 افتراضيًا.")
+            port_number = 80
+        else:
+            port_number = svc.spec.ports[0].port
+    except ApiException as e:
+        print(f"⚠️ لم يتم العثور على Service {app_name} في {namespace}: {e}")
+        port_number = 80
 
     ingress_manifest = client.V1Ingress(
         api_version="networking.k8s.io/v1",
         kind="Ingress",
         metadata=client.V1ObjectMeta(
-            name=f"{app_name}-ingress",
+            name=ingress_name,
             annotations={
-                "kubernetes.io/ingress.class": "nginx",
                 "cert-manager.io/cluster-issuer": "letsencrypt-prod",
             },
         ),
         spec=client.V1IngressSpec(
+            ingress_class_name="nginx",
             tls=[
                 client.V1IngressTLS(
-                    hosts=[f"{app_name}.{namespace}.apps.rango-project.duckdns.org"],
-                    secret_name=f"{app_name}-tls"
+                    hosts=[host],
+                    secret_name=f"{app_name}-tls",
                 )
             ],
             rules=[
                 client.V1IngressRule(
-                    host=f"{app_name}.{namespace}.apps.rango-project.duckdns.org",
+                    host=host,
                     http=client.V1HTTPIngressRuleValue(
                         paths=[
                             client.V1HTTPIngressPath(
@@ -135,7 +154,7 @@ def create_ingress_for_app(app_name: str, namespace: str):
                                 backend=client.V1IngressBackend(
                                     service=client.V1IngressServiceBackend(
                                         name=app_name,
-                                        port=client.V1ServiceBackendPort(number=80),
+                                        port=client.V1ServiceBackendPort(number=port_number),
                                     )
                                 ),
                             )
@@ -146,14 +165,16 @@ def create_ingress_for_app(app_name: str, namespace: str):
         ),
     )
 
+    # ✅ إنشاء الـIngress إذا لم يكن موجود
     try:
         net_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
-        print(f"✅ Ingress created for {app_name} in {namespace}")
+        print(f"✅ Ingress {ingress_name} created for {app_name} (port {port_number}) in {namespace}")
     except ApiException as e:
         if getattr(e, "status", None) == 409:
-            print(f"⚠️ Ingress {app_name}-ingress already exists.")
+            print(f"⚠️ Ingress {ingress_name} already exists.")
         else:
             raise
+
 
 
 # ============================================================
