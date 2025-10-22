@@ -125,7 +125,7 @@ async def deploy_app(spec: AppSpec, ctx: CurrentContext = Depends(get_current_co
     try:
         spec = _force_ns_on_spec(spec, ctx)               # يفرض ns من الـJWT
         _ = verify_namespace_access(ctx, spec.namespace)  # يتأكد أن ns مسموح
-        deployment = upsert_deployment(spec, ctx)
+        deployment = upsert_deployment(spec)
         service = upsert_service(spec, ctx)
 
         return {"deployment": deployment, "service": service}
