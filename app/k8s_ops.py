@@ -117,8 +117,11 @@ def create_ingress_for_app(app_name: str, namespace: str):
     net_api = clients["networking"]
     core_api = clients["core"]
 
-    ctx = get_current_context()
+   # 👇 لا تستدعي get_current_context هنا أبداً
+    if ctx is None:
+       raise RuntimeError("❌ Missing context: يجب تمرير ctx من FastAPI route (Depends(get_current_context))")
     role = getattr(ctx, "role", "")
+
 
     # 🚫 منع platform_admin من إنشاء أي مورد داخل namespaces العملاء
     if role == "platform_admin" and namespace != "default":
