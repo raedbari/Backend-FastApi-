@@ -105,7 +105,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 from .k8s_client import get_api_clients
-from .context import get_current_context
+from .auth import get_current_context
 
 
 def create_ingress_for_app(app_name: str, namespace: str):
