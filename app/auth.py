@@ -157,22 +157,31 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
             msg = "Account rejected"
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=msg)
 
-    # استخدم namespace آمن: إن لم يوجد، اجعل "default" (مهم للـ platform_admin)
-    ns = tenant.k8s_namespace or "default"
+    # 🧠 تحديد الـnamespace حسب الدور
+    if user.role == "platform_admin":
+        ns = "default"  # خاص بإدارة المنصة
+    else:
+        ns = tenant.k8s_namespace
+        if not ns:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tenant does not have a Kubernetes namespace assigned",
+            )
 
+    # 🎟️ إنشاء التوكن
     token = create_access_token(
         sub=user.email,
         tid=tenant.id,
         ns=ns,
         role=user.role or "user",
     )
+
     return LoginResponse(
         access_token=token,
         expires_in=JWT_EXP_HOURS * 3600,
         user=LoginUser(id=user.id, email=user.email, role=user.role or "user"),
         tenant=LoginTenant(id=tenant.id, name=tenant.name, k8s_namespace=ns),
     )
-
 
 # ----------------------------
 # Dependencies لاستخراج الـcontext
