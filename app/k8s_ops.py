@@ -99,44 +99,49 @@ def upsert_deployment(spec: AppSpec) -> dict:
             raise
     return resp.to_dict()
 # ============================================================
-# 🌐 إنشاء Ingress تلقائيًا (إصدار محسّن — يدعم TLS + اكتشاف المنفذ)
+# 🌐 إنشاء Ingress تلقائيًا (يدعم TLS + اكتشاف المنفذ + حماية الخصوصية)
 # ============================================================
 
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 from .k8s_client import get_api_clients
+from .context import get_current_context
 
 
 def create_ingress_for_app(app_name: str, namespace: str):
     """
     إنشاء Ingress لتطبيق معين داخل Namespace محدد،
-    يدعم اكتشاف المنفذ تلقائيًا وتهيئة شهادة TLS من cert-manager.
+    مع دعم TLS واكتشاف المنفذ التلقائي، واحترام صلاحيات المستخدم.
     """
     clients = get_api_clients()
     net_api = clients["networking"]
     core_api = clients["core"]
 
+    ctx = get_current_context()
+    role = getattr(ctx, "role", "")
+
+    # 🚫 منع platform_admin من إنشاء أي مورد داخل namespaces العملاء
+    if role == "platform_admin" and namespace != "default":
+        print(f"🚫 منع platform_admin من إنشاء Ingress داخل namespace العملاء ({namespace})")
+        return
+
+    # 🚫 منع أي مستخدم آخر من النشر داخل default
+    if role != "platform_admin" and namespace == "default":
+        print(f"🚫 لا يُسمح للمستخدم '{role}' بالنشر داخل namespace 'default'")
+        return
+
     host = f"{app_name}.{namespace}.apps.smartdevops.lat"
     ingress_name = f"{app_name}-ingress"
     tls_secret = f"{app_name}-tls"
 
-    # ==========================
-    # 🔍 اكتشاف المنفذ من الـService
-    # ==========================
+    # 🔍 اكتشاف المنفذ من Service
     try:
         svc = core_api.read_namespaced_service(app_name, namespace)
-        if svc.spec.ports and len(svc.spec.ports) > 0:
-            port_number = svc.spec.ports[0].port
-        else:
-            print(f"⚠️ Service {app_name} لا يحتوي على أي منافذ — استخدام 8080 افتراضيًا.")
-            port_number = 8080
-    except ApiException as e:
-        print(f"⚠️ لم يتم العثور على Service {app_name} في {namespace}: {e}")
+        port_number = svc.spec.ports[0].port if svc.spec.ports else 8080
+    except ApiException:
+        print(f"⚠️ Service {app_name} غير موجود في {namespace}، سيتم استخدام المنفذ الافتراضي 8080.")
         port_number = 8080
 
-    # ==========================
-    # 🧱 بناء كائن الـIngress
-    # ==========================
     ingress_manifest = client.V1Ingress(
         api_version="networking.k8s.io/v1",
         kind="Ingress",
@@ -148,12 +153,7 @@ def create_ingress_for_app(app_name: str, namespace: str):
             },
         ),
         spec=client.V1IngressSpec(
-            tls=[
-                client.V1IngressTLS(
-                    hosts=[host],
-                    secret_name=tls_secret,
-                )
-            ],
+            tls=[client.V1IngressTLS(hosts=[host], secret_name=tls_secret)],
             rules=[
                 client.V1IngressRule(
                     host=host,
@@ -176,83 +176,80 @@ def create_ingress_for_app(app_name: str, namespace: str):
         ),
     )
 
-    # ==========================
-    # 🚀 إنشاء أو تحديث الـIngress
-    # ==========================
     try:
         existing = net_api.read_namespaced_ingress(ingress_name, namespace)
-        # إذا كان موجود، نحذفه وننشئه من جديد لتفادي أي تضارب
         net_api.delete_namespaced_ingress(ingress_name, namespace)
-        print(f"♻️ تم حذف Ingress {ingress_name} القديم — سيتم إعادة إنشائه.")
+        print(f"♻️ حذف Ingress قديم {ingress_name} في {namespace} — سيتم إعادة إنشائه.")
     except ApiException as e:
         if getattr(e, "status", None) != 404:
-            print(f"⚠️ خطأ أثناء فحص Ingress الحالي: {e}")
+            print(f"⚠️ فشل التحقق من Ingress الحالي: {e}")
 
     try:
         net_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
-        print(f"✅ Ingress {ingress_name} تم إنشاؤه بنجاح للتطبيق {app_name} (المنفذ {port_number}) في {namespace}")
-        print(f"🌍 العنوان: https://{host}")
+        print(f"✅ تم إنشاء Ingress {ingress_name} بنجاح في {namespace}")
+        print(f"🌍 الرابط: https://{host}")
     except ApiException as e:
-        print(f"❌ خطأ أثناء إنشاء Ingress: {e}")
+        print(f"❌ فشل إنشاء Ingress: {e}")
         raise
 
+
 # ============================================================
-# ⚙️  إنشاء أو تحديث الـ Service + Ingress تلقائيًا (نسخة محسّنة)
+# ⚙️ إنشاء أو تحديث الـService + Ingress (نسخة آمنة ومحكومة بالأدوار)
 # ============================================================
-def upsert_service(spec: AppSpec, ctx: "CurrentContext" = None) -> dict:
+def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
     """
-    - تنشئ أو تحدّث الـService في الـnamespace الخاص بالمستخدم (من JWT).
-    - ثم تنشئ تلقائيًا Ingress بنفس الـnamespace مع TLS.
+    ينشئ أو يحدّث Service داخل الـnamespace الصحيح،
+    مع احترام صلاحيات المستخدم ومنع أي تجاوز على خصوصية العملاء.
     """
-    # 🔒 استخدم namespace من السياق (JWT) أولاً
-    ns = None
-    if ctx and getattr(ctx, "k8s_namespace", None):
-        ns = ctx.k8s_namespace
-    elif getattr(spec, "namespace", None):
-        ns = spec.namespace
-    else:
-        ns = get_namespace()  # fallback فقط، لا يُفضّل استخدامها
+    current_ctx = ctx or get_current_context()
+    role = getattr(current_ctx, "role", "")
+    ns = getattr(current_ctx, "k8s_namespace", None) or getattr(spec, "namespace", None) or "default"
+
+    # 🚫 حماية الخصوصية: لا يُسمح لـ platform_admin بالدخول إلى namespaces العملاء
+    if role == "platform_admin" and ns != "default":
+        raise PermissionError(f"🚫 لا يُسمح لـ platform_admin بالنشر داخل namespaces العملاء ({ns}).")
+
+    # 🚫 لا يُسمح لأي مستخدم آخر بالنشر داخل default
+    if role != "platform_admin" and ns == "default":
+        raise PermissionError(f"🚫 لا يُسمح للمستخدم '{role}' بالنشر داخل namespace 'default'.")
+
+    print(f"🧭 المستخدم '{role}' يعمل ضمن namespace: {ns}")
 
     core = get_api_clients()["core"]
-
     app_label = spec.effective_app_label
-    svc_name  = spec.effective_service_name
-    port      = spec.effective_port
+    svc_name = spec.effective_service_name
+    port = spec.effective_port
 
-    labels   = platform_labels({"app": app_label, "role": "active"})
+    labels = platform_labels({"app": app_label, "role": "active"})
     selector = {"app": app_label, "role": "active"}
 
     try:
-        # ✅ محاولة قراءة الـService الحالي
         existing = core.read_namespaced_service(name=svc_name, namespace=ns)
-        svc_type     = existing.spec.type or "ClusterIP"
-        cluster_port = (existing.spec.ports[0].port if existing.spec.ports else port)
-        node_port    = None
-        if svc_type == "NodePort" and existing.spec.ports:
-            node_port = existing.spec.ports[0].node_port
+        svc_type = existing.spec.type or "ClusterIP"
+        cluster_port = existing.spec.ports[0].port if existing.spec.ports else port
+        node_port = existing.spec.ports[0].node_port if svc_type == "NodePort" else None
 
-        # 🔄 تحديث الخدمة (patch)
         patch_body = client.V1Service(
             api_version="v1",
             metadata=client.V1ObjectMeta(labels=labels),
             spec=client.V1ServiceSpec(
                 selector=selector,
                 type=svc_type,
-                ports=[client.V1ServicePort(
-                    name="http",
-                    port=cluster_port,
-                    target_port=port,
-                    protocol="TCP",
-                    node_port=node_port
-                )]
-            )
+                ports=[
+                    client.V1ServicePort(
+                        name="http",
+                        port=cluster_port,
+                        target_port=port,
+                        protocol="TCP",
+                        node_port=node_port,
+                    )
+                ],
+            ),
         )
         resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
-        print(f"🔄 Service {svc_name} updated in {ns}")
-
+        print(f"🔄 تم تحديث Service {svc_name} في {ns}")
     except ApiException as e:
         if getattr(e, "status", None) == 404:
-            # 🆕 إنشاء جديد
             create_body = client.V1Service(
                 api_version="v1",
                 kind="Service",
@@ -260,25 +257,26 @@ def upsert_service(spec: AppSpec, ctx: "CurrentContext" = None) -> dict:
                 spec=client.V1ServiceSpec(
                     type="ClusterIP",
                     selector=selector,
-                    ports=[client.V1ServicePort(
-                        name="http",
-                        port=port,
-                        target_port=port,
-                        protocol="TCP"
-                    )]
-                )
+                    ports=[
+                        client.V1ServicePort(
+                            name="http",
+                            port=port,
+                            target_port=port,
+                            protocol="TCP",
+                        )
+                    ],
+                ),
             )
             resp = core.create_namespaced_service(namespace=ns, body=create_body)
-            print(f"✅ Service {svc_name} created in {ns}")
+            print(f"✅ تم إنشاء Service {svc_name} في {ns}")
         else:
             raise
 
-    # 🧠 بعد إنشاء أو تحديث الخدمة بنجاح → أنشئ أو حدّث الـIngress تلقائيًا
     try:
-        print(f"🚀 Creating ingress for {app_label} in namespace {ns}")
+        print(f"🚀 إنشاء Ingress للتطبيق {app_label} في {ns}")
         create_ingress_for_app(app_label, ns)
     except Exception as e:
-        print(f"⚠️ Failed to create/update Ingress for {app_label} in {ns}: {e}")
+        print(f"⚠️ فشل إنشاء أو تحديث Ingress للتطبيق {app_label} في {ns}: {e}")
 
     return resp.to_dict()
 
