@@ -119,24 +119,6 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 # ----------------------------
 # تسجيل الدخول
 # ----------------------------
-@router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    """
-    سلوك الواجهة:
-    - بيانات اعتماد خاطئة -> 404 "Not Found" (حتى لا نفضح وجود الحساب)
-    - حساب موجود لكن التينانت ليس active:
-        pending    -> 403 "Account pending approval"
-        suspended  -> 403 "Account suspended"
-        rejected   -> 403 "Account rejected"
-    - نجاح -> 200 مع JWT
-    """
-    resp = login_user(db, payload.email, payload.password)
-    if not resp:
-        # توحيد الاستجابة عند فشل الاعتماد: 404
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
-    return resp
-
-
 def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse]:
     user: Optional[User] = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.password_hash):
@@ -157,8 +139,17 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
             msg = "Account rejected"
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=msg)
 
-    # استخدم namespace آمن: إن لم يوجد، اجعل "default" (مهم للـ platform_admin)
-    ns = tenant.k8s_namespace or "default"
+    # 🧠 اجعل الـ namespace يعتمد على الدور
+    if user.role == "platform_admin":
+        ns = "default"  # فقط للمنصة نفسها
+    else:
+        # العميل العادي (admin / user) يجب أن يملك namespace خاص
+        ns = tenant.k8s_namespace
+        if not ns:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tenant does not have a Kubernetes namespace assigned",
+            )
 
     token = create_access_token(
         sub=user.email,
@@ -166,15 +157,14 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
         ns=ns,
         role=user.role or "user",
     )
+
     return LoginResponse(
         access_token=token,
         expires_in=JWT_EXP_HOURS * 3600,
         user=LoginUser(id=user.id, email=user.email, role=user.role or "user"),
         tenant=LoginTenant(id=tenant.id, name=tenant.name, k8s_namespace=ns),
     )
-
-
-# ----------------------------
+#---------------------------------
 # Dependencies لاستخراج الـcontext
 # ----------------------------
 bearer_scheme = HTTPBearer(auto_error=True)
