@@ -98,49 +98,60 @@ def upsert_deployment(spec: AppSpec) -> dict:
         else:
             raise
     return resp.to_dict()
+# ============================================================
+# 🌐 إنشاء Ingress تلقائيًا (إصدار محسّن — يدعم TLS + اكتشاف المنفذ)
+# ============================================================
 
-# ============================================================
-# 🌐 إنشاء Ingress تلقائيًا (إصدار محسّن — يكتشف المنفذ تلقائيًا)
-# ============================================================
 from kubernetes import client
 from kubernetes.client.rest import ApiException
-from .k8s_client import get_api_clients  # لو عندك دالة get_api_clients موجودة
+from .k8s_client import get_api_clients
+
 
 def create_ingress_for_app(app_name: str, namespace: str):
+    """
+    إنشاء Ingress لتطبيق معين داخل Namespace محدد،
+    يدعم اكتشاف المنفذ تلقائيًا وتهيئة شهادة TLS من cert-manager.
+    """
     clients = get_api_clients()
     net_api = clients["networking"]
     core_api = clients["core"]
 
     host = f"{app_name}.{namespace}.apps.smartdevops.lat"
     ingress_name = f"{app_name}-ingress"
+    tls_secret = f"{app_name}-tls"
 
-    # ✅ أولاً: نكتشف المنفذ من الـService (بدون ما نثبّت 80)
+    # ==========================
+    # 🔍 اكتشاف المنفذ من الـService
+    # ==========================
     try:
         svc = core_api.read_namespaced_service(app_name, namespace)
-        if not svc.spec.ports:
-            print(f"⚠️ Service {app_name} لا يحتوي على أي منافذ! سيتم استخدام المنفذ 80 افتراضيًا.")
-            port_number = 80
-        else:
+        if svc.spec.ports and len(svc.spec.ports) > 0:
             port_number = svc.spec.ports[0].port
+        else:
+            print(f"⚠️ Service {app_name} لا يحتوي على أي منافذ — استخدام 8080 افتراضيًا.")
+            port_number = 8080
     except ApiException as e:
         print(f"⚠️ لم يتم العثور على Service {app_name} في {namespace}: {e}")
-        port_number = 80
+        port_number = 8080
 
+    # ==========================
+    # 🧱 بناء كائن الـIngress
+    # ==========================
     ingress_manifest = client.V1Ingress(
         api_version="networking.k8s.io/v1",
         kind="Ingress",
         metadata=client.V1ObjectMeta(
             name=ingress_name,
             annotations={
+                "kubernetes.io/ingress.class": "nginx",
                 "cert-manager.io/cluster-issuer": "letsencrypt-prod",
             },
         ),
         spec=client.V1IngressSpec(
-            ingress_class_name="nginx",
             tls=[
                 client.V1IngressTLS(
                     hosts=[host],
-                    secret_name=f"{app_name}-tls",
+                    secret_name=tls_secret,
                 )
             ],
             rules=[
@@ -165,15 +176,25 @@ def create_ingress_for_app(app_name: str, namespace: str):
         ),
     )
 
-    # ✅ إنشاء الـIngress إذا لم يكن موجود
+    # ==========================
+    # 🚀 إنشاء أو تحديث الـIngress
+    # ==========================
+    try:
+        existing = net_api.read_namespaced_ingress(ingress_name, namespace)
+        # إذا كان موجود، نحذفه وننشئه من جديد لتفادي أي تضارب
+        net_api.delete_namespaced_ingress(ingress_name, namespace)
+        print(f"♻️ تم حذف Ingress {ingress_name} القديم — سيتم إعادة إنشائه.")
+    except ApiException as e:
+        if getattr(e, "status", None) != 404:
+            print(f"⚠️ خطأ أثناء فحص Ingress الحالي: {e}")
+
     try:
         net_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
-        print(f"✅ Ingress {ingress_name} created for {app_name} (port {port_number}) in {namespace}")
+        print(f"✅ Ingress {ingress_name} تم إنشاؤه بنجاح للتطبيق {app_name} (المنفذ {port_number}) في {namespace}")
+        print(f"🌍 العنوان: https://{host}")
     except ApiException as e:
-        if getattr(e, "status", None) == 409:
-            print(f"⚠️ Ingress {ingress_name} already exists.")
-        else:
-            raise
+        print(f"❌ خطأ أثناء إنشاء Ingress: {e}")
+        raise
 
 # ============================================================
 # ⚙️  إنشاء أو تحديث الـ Service + Ingress تلقائيًا
