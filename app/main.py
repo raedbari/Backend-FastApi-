@@ -61,7 +61,7 @@ app = FastAPI(
 # مصادقة تحت /api
 app.include_router(auth_router, prefix="/api")
 
-app.include_router(contact_router)
+app.include_router(router)
 
 # راوتر رئيسي لكل مسارات الـAPI
 api = APIRouter(prefix="/api", tags=["default"])
