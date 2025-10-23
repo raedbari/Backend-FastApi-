@@ -22,7 +22,7 @@ def send_email(to_email: str, subject: str, body: str):
         <h2 style="color:#0078D7;">{subject}</h2>
         <p>{body}</p>
         <br/>
-        <p>تحياتنا 👋<br><b>Smart DevOps Platform</b></p>
+        <p>👋<br><b>Smart DevOps Platform</b></p>
       </body>
     </html>
     """
