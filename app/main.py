@@ -42,6 +42,10 @@ class ContactPayload(BaseModel):
     name: str
     email: str
     message: str
+
+
+app.include_router(contact_router)
+
 # -------------------------------------------------------------------
 # FastAPI app
 # -------------------------------------------------------------------
@@ -314,9 +318,6 @@ def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None
 
 
 
-
-
-
 @router.post("/contact")
 def contact_us(payload: ContactPayload):
     admin = os.getenv("ADMIN_EMAIL", "admin@smartdevops.lat")
@@ -324,3 +325,5 @@ def contact_us(payload: ContactPayload):
     body = f"From: {payload.email}\n\nMessage:\n{payload.message}"
     send_email(admin, subject, body)
     return {"ok": True}
+
+
