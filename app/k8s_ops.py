@@ -108,7 +108,7 @@ from .k8s_client import get_api_clients
 from .auth import get_current_context
 
 
-def create_ingress_for_app(app_name: str, namespace: str و ctx=None):
+def create_ingress_for_app(app_name: str, namespace: str , ctx=None):
     """
     إنشاء Ingress لتطبيق معين داخل Namespace محدد،
     مع دعم TLS واكتشاف المنفذ التلقائي، واحترام صلاحيات المستخدم.
