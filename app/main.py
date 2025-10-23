@@ -17,8 +17,8 @@ from .k8s_ops import (
 from .db import init_db
 from .auth import router as auth_router
 from .auth import get_current_context, CurrentContext
-
-
+from app.mailer import send_email
+import os
 # -------------------------------------------------------------------
 # إعداد OAuth2 لقراءة التوكن من الهيدر Authorization
 # -------------------------------------------------------------------
@@ -36,7 +36,12 @@ class NameNS(BaseModel):
     name: str
     namespace: str | None = None  # متروكة للتوافق فقط؛ تُتجاهل
 
+router = APIRouter(prefix="/api")
 
+class ContactPayload(BaseModel):
+    name: str
+    email: str
+    message: str
 # -------------------------------------------------------------------
 # FastAPI app
 # -------------------------------------------------------------------
@@ -306,3 +311,16 @@ def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None
 
     # المسؤول مسموح له تحديد أي ns؛ إن لم يمرِّر، استخدم ns من السياق
     return requested_ns or user_ns
+
+
+
+
+
+
+@router.post("/contact")
+def contact_us(payload: ContactPayload):
+    admin = os.getenv("ADMIN_EMAIL", "admin@smartdevops.lat")
+    subject = f"📩 Contact message from {payload.name}"
+    body = f"From: {payload.email}\n\nMessage:\n{payload.message}"
+    send_email(admin, subject, body)
+    return {"ok": True}
