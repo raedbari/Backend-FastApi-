@@ -58,6 +58,18 @@ app = FastAPI(
     description="Multi-tenant Platform API. All app endpoints are tenant-scoped via JWT.",
 )
 
+
+
+@router.post("/contact")
+def contact_us(payload: ContactPayload):
+    admin = os.getenv("ADMIN_EMAIL", "admin@smartdevops.lat")
+    subject = f"📩 Contact message from {payload.name}"
+    body = f"From: {payload.email}\n\nMessage:\n{payload.message}"
+    send_email(admin, subject, body)
+    return {"ok": True}
+
+
+
 # مصادقة تحت /api
 app.include_router(auth_router, prefix="/api")
 
@@ -317,15 +329,4 @@ def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None
 
     # المسؤول مسموح له تحديد أي ns؛ إن لم يمرِّر، استخدم ns من السياق
     return requested_ns or user_ns
-
-
-
-@router.post("/contact")
-def contact_us(payload: ContactPayload):
-    admin = os.getenv("ADMIN_EMAIL", "admin@smartdevops.lat")
-    subject = f"📩 Contact message from {payload.name}"
-    body = f"From: {payload.email}\n\nMessage:\n{payload.message}"
-    send_email(admin, subject, body)
-    return {"ok": True}
-
 
