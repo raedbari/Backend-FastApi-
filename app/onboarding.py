@@ -17,6 +17,7 @@ from app.config import JWT_EXP_HOURS      # لو أردت استخدام الق�
 #from app.utils import _send_email, _send_webhook, _audit  # كما في كودك الحالي
 #from kubernetes.client.models import V1Subject
 from sqlalchemy import select, or_, delete
+from app.mailer import send_email
 
 ...
 
@@ -427,9 +428,10 @@ def approve(
     _audit(db, t.id, "approve", actor=ctx.email)
 
     # إشعار المستخدم
-    u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
-    if u:
-        _send_email(u.email, "[Smart DevOps] Your account is approved", "You can sign in now.")
+  
+   if u:
+     send_email(u.email, "[Smart DevOps] Your account is approved", "Your tenant has been approved successfully. You can now log in to Smart DevOps.")
+
 
     return {
         "ok": True,
