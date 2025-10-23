@@ -122,14 +122,40 @@ def _ctx_ns(ctx: CurrentContext) -> str:
 # -------------------------------------------------------------------
 @api.post("/apps/deploy")
 async def deploy_app(spec: AppSpec, ctx: CurrentContext = Depends(get_current_context)):
+    """
+    Deploy endpoint — نطبق قواعد الخصوصية:
+    - إن كان المستخدم عادي (admin/user): نُجبِر الـspec.namespace على قيمة ctx.k8s_namespace.
+    - إن كان platform_admin: نسمح له بتمرير namespace في payload (حتى يتمكن من إدارة أي تينانت).
+    """
     try:
-        spec = _force_ns_on_spec(spec, ctx)               # يفرض ns من الـJWT
-        _ = verify_namespace_access(ctx, spec.namespace)  # يتأكد أن ns مسموح
-        deployment = upsert_deployment(spec)
-        service = upsert_service(spec, ctx)
+        # ----- قرر الـnamespace النهائي بناءً على الدور -----
+        user_role = (getattr(ctx, "role", "") or "").lower()
+        token_ns = ctx.k8s_namespace  # الـnamespace من التوكن (قد تكون "default" للـplatform_admin)
 
+        if user_role == "platform_admin":
+            # يسمح للـplatform_admin بتحديد namespace من الـpayload (لأغراض الصيانة)
+            # إذا لم يُمرّر الـpayload namespace، نستخدم الـns من التوكن كـfallback
+            final_ns = spec.namespace or token_ns or "default"
+        else:
+            # للمستخدمين العاديين/admins: نُجبِر على استخدام الـnamespace من التوكن
+            if not token_ns:
+                raise HTTPException(status_code=400, detail="No namespace assigned to your account")
+            final_ns = token_ns
+
+        # فرض الـnamespace على الـspec قبل أي عملية
+        spec.namespace = final_ns
+
+        # تأكيد أن المستخدم يملك صلاحية هذا namespace (مركزية التحقق)
+        _ = verify_namespace_access(ctx, spec.namespace)
+
+        # تنفيذ الإنشاء/التحديث — ممرّر ctx حتى تستخدمه الدوال الداخلية عند الحاجة
+        deployment = upsert_deployment(spec)           # upsert_deployment يستخدم spec.namespace
+        service = upsert_service(spec, ctx)            # upsert_service يستعمل ctx لحماية الخصوصية
         return {"deployment": deployment, "service": service}
+    except HTTPException:
+        raise
     except Exception as e:
+        # عرض رسالة خطأ واضحة للـclient (يمكن تحسين الرسائل لاحقًا)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 # @api.post("/apps/scale")
