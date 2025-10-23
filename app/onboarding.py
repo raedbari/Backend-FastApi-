@@ -421,17 +421,22 @@ def approve(
 
     # تحديث قاعدة البيانات + تشغيل التزويد الخلفي
     t.status = "active"
-    db.add(t); db.commit()
-    db.add(ProvisioningRun(tenant_id=tenant_id, status="queued", retries=0)); db.commit()
+    db.add(t)
+    db.commit()
+    db.add(ProvisioningRun(tenant_id=tenant_id, status="queued", retries=0))
+    db.commit()
 
     bg.add_task(_provision_tenant, tenant_id)
     _audit(db, t.id, "approve", actor=ctx.email)
 
     # إشعار المستخدم
-  
-   if u:
-     send_email(u.email, "[Smart DevOps] Your account is approved", "Your tenant has been approved successfully. You can now log in to Smart DevOps.")
-
+    u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
+    if u:
+        send_email(
+            u.email,
+            "[Smart DevOps] Your account is approved",
+            "Your tenant has been approved successfully. You can now log in to Smart DevOps."
+        )
 
     return {
         "ok": True,
