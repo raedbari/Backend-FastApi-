@@ -108,7 +108,7 @@ from .k8s_client import get_api_clients
 from .auth import get_current_context
 
 
-def create_ingress_for_app(app_name: str, namespace: str):
+def create_ingress_for_app(app_name: str, namespace: str و ctx=None):
     """
     إنشاء Ingress لتطبيق معين داخل Namespace محدد،
     مع دعم TLS واكتشاف المنفذ التلقائي، واحترام صلاحيات المستخدم.
@@ -119,9 +119,10 @@ def create_ingress_for_app(app_name: str, namespace: str):
 
    # 👇 لا تستدعي get_current_context هنا أبداً
     if ctx is None:
-       raise RuntimeError("❌ Missing context: يجب تمرير ctx من FastAPI route (Depends(get_current_context))")
+       ctx = get_current_context()
     role = getattr(ctx, "role", "")
 
+  
 
     # 🚫 منع platform_admin من إنشاء أي مورد داخل namespaces العملاء
     if role == "platform_admin" and namespace != "default":
@@ -277,7 +278,7 @@ def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
 
     try:
         print(f"🚀 إنشاء Ingress للتطبيق {app_label} في {ns}")
-        create_ingress_for_app(app_label, ns)
+        create_ingress_for_app(app_label, ns, ctx=current_ctx)
     except Exception as e:
         print(f"⚠️ فشل إنشاء أو تحديث Ingress للتطبيق {app_label} في {ns}: {e}")
 
