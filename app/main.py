@@ -44,7 +44,7 @@ class ContactPayload(BaseModel):
     message: str
 
 
-app.include_router(contact_router)
+
 
 # -------------------------------------------------------------------
 # FastAPI app
@@ -60,6 +60,8 @@ app = FastAPI(
 
 # مصادقة تحت /api
 app.include_router(auth_router, prefix="/api")
+
+app.include_router(contact_router)
 
 # راوتر رئيسي لكل مسارات الـAPI
 api = APIRouter(prefix="/api", tags=["default"])
