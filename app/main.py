@@ -59,15 +59,26 @@ app = FastAPI(
 )
 
 
-
 @router.post("/contact")
 def contact_us(payload: ContactPayload):
     admin = os.getenv("ADMIN_EMAIL", "admin@smartdevops.lat")
-    subject = f"📩 Contact message from {payload.name}"
-    body = f"From: {payload.email}\n\nMessage:\n{payload.message}"
-    send_email(admin, subject, body)
-    return {"ok": True}
+    
+    # رسالة للأدمن
+    subject_admin = f"📩 Contact message from {payload.name}"
+    body_admin = f"From: {payload.email}\n\nMessage:\n{payload.message}"
+    send_email(admin, subject_admin, body_admin)
 
+    # رد تلقائي للمستخدم
+    subject_user = "✅ We've received your message"
+    body_user = (
+        f"Hi {payload.name},\n\n"
+        "Thanks for contacting Smart DevOps Platform. "
+        "We received your message and will get back to you soon.\n\n"
+        "Best regards,\nSmart DevOps Team"
+    )
+    send_email(payload.email, subject_user, body_user)
+
+    return {"ok": True}
 
 
 # مصادقة تحت /api
