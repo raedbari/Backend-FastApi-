@@ -319,28 +319,29 @@ def _ensure_admin(ctx: CurrentContext):
 
 
 @admin_router.get("/pending", response_model=List[PendingTenant])
-def list_pending(ctx: CurrentContext = Depends(get_current_context), db: Session = Depends(get_db)):
-    _ensure_admin(ctx)
+def list_pending(
+    ctx: CurrentContext = Depends(get_current_context),
+    db: Session = Depends(get_db)
+):
+    _ensure_admin(ctx)  # ✅ رجّع هذا السطر
+
     rows = db.execute(select(Tenant).where(Tenant.status == "pending")).scalars().all()
     out: List[PendingTenant] = []
 
     for t in rows:
         u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
-        
-        # 👇 التحقق قبل الإضافة
         if not u:
             continue  # تخطي أي tenant ليس لديه مستخدم
 
-        out.append(
-            PendingTenant(
-                id=t.id,
-                name=t.name,
-                email=u.email,
-                k8s_namespace=t.k8s_namespace
-            )
-        )
+        out.append(PendingTenant(
+            id=t.id,
+            name=t.name,
+            email=u.email,
+            k8s_namespace=t.k8s_namespace
+        ))
 
     return out
+
 
 
 class ApprovePayload(BaseModel):
@@ -355,11 +356,13 @@ def approve(
     db: Session = Depends(get_db),
 ):
     _ensure_admin(ctx)
+
     t = db.get(Tenant, tenant_id)
     if not t:
         raise HTTPException(404, detail="Tenant not found")
 
-    ns_name = f"tenant-{t.name.lower()}"
+    # ✅ لا تغيّر الـ namespace إن كان موجودًا من التسجيل
+    ns_name = t.k8s_namespace or f"tenant-{t.name.lower()}"
     t.k8s_namespace = ns_name
 
     # تحميل إعدادات Kubernetes
@@ -370,23 +373,23 @@ def approve(
 
     k8s = client.CoreV1Api()
 
-    # إنشاء Namespace (idempotent)
+    # Namespace (idempotent)
     try:
         k8s.read_namespace(name=ns_name)
     except client.exceptions.ApiException as e:
         if e.status == 404:
             ns_body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns_name))
             k8s.create_namespace(ns_body)
+        else:
+            raise
+
     apply_quota_and_limits(ns_name)
 
-    # إنشاء NetworkPolicy افتراضية (idempotent)
+    # NetworkPolicy (idempotent)
     net_api = client.NetworkingV1Api()
     policy = client.V1NetworkPolicy(
         metadata=client.V1ObjectMeta(name="default-deny", namespace=ns_name),
-        spec=client.V1NetworkPolicySpec(
-            pod_selector={},
-            policy_types=["Ingress", "Egress"],
-        ),
+        spec=client.V1NetworkPolicySpec(pod_selector={}, policy_types=["Ingress", "Egress"]),
     )
     try:
         net_api.create_namespaced_network_policy(ns_name, policy)
@@ -394,33 +397,24 @@ def approve(
         if e.status != 409:
             raise
 
-    # إنشاء ServiceAccount خاص بالـTenant (idempotent)
+    # ServiceAccount (idempotent)
     sa_name = "tenant-admin"
-    sa_body = client.V1ServiceAccount(
-        metadata=client.V1ObjectMeta(name=sa_name, namespace=ns_name)
-    )
+    sa_body = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=sa_name, namespace=ns_name))
     try:
         k8s.create_namespaced_service_account(namespace=ns_name, body=sa_body)
     except client.exceptions.ApiException as e:
         if e.status != 409:
             raise
 
-    # إنشاء Role محدود الصلاحيات (idempotent)
+    # Role (idempotent)
     rbac_api = client.RbacAuthorizationV1Api()
     role_body = client.V1Role(
         metadata=client.V1ObjectMeta(name="tenant-admin-role", namespace=ns_name),
         rules=[
             client.V1PolicyRule(
                 api_groups=["", "apps", "batch", "extensions"],
-                resources=[
-                    "pods",
-                    "deployments",
-                    "services",
-                    "configmaps",
-                    "secrets",
-                    "jobs",
-                ],
-                verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
+                resources=["pods","deployments","services","configmaps","secrets","jobs"],
+                verbs=["get","list","watch","create","update","patch","delete"],
             )
         ],
     )
@@ -430,19 +424,11 @@ def approve(
         if e.status != 409:
             raise
 
-    # ربط الـSA بالـRole بدون V1Subject (باستخدام dict) — idempotent
+    # RoleBinding (idempotent)
     rb_body = client.V1RoleBinding(
         metadata=client.V1ObjectMeta(name="tenant-admin-binding", namespace=ns_name),
-        subjects=[{
-            "kind": "ServiceAccount",
-            "name": sa_name,
-            "namespace": ns_name,
-        }],
-        role_ref=client.V1RoleRef(
-            api_group="rbac.authorization.k8s.io",
-            kind="Role",
-            name="tenant-admin-role",
-        ),
+        subjects=[{"kind": "ServiceAccount", "name": sa_name, "namespace": ns_name}],
+        role_ref=client.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="Role", name="tenant-admin-role"),
     )
     try:
         rbac_api.create_namespaced_role_binding(namespace=ns_name, body=rb_body)
@@ -450,28 +436,42 @@ def approve(
         if e.status != 409:
             raise
 
-    # تحديث قاعدة البيانات + تشغيل التزويد الخلفي
+    # ✅ فعّل التينانت وفعّل المستخدم
     t.status = "active"
-    db.add(t)
+    user = db.execute(
+        select(User).where(User.tenant_id == t.id).order_by(User.id.asc())
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, detail="No user found for tenant")
+
+    if user.role == "pending_user":
+        user.role = "tenant_admin"  # أو "admin" حسب سياستك
+
+    db.add_all([t, user])
     db.commit()
+    db.refresh(t)
+    db.refresh(user)
+
+    # سجل provisioning وشغّله بالخلفية
     db.add(ProvisioningRun(tenant_id=tenant_id, status="queued", retries=0))
     db.commit()
-
     bg.add_task(_provision_tenant, tenant_id)
+
     _audit(db, t.id, "approve", actor=ctx.email)
 
-    # إشعار المستخدم
-    u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
-    if u:
+    # بريد للمستخدم
+    try:
         send_email(
-            u.email,
+            user.email,
             "[Smart DevOps] Your account is approved",
             "Your tenant has been approved successfully. You can now log in to Smart DevOps."
         )
+    except Exception as e:
+        print(f"[approve] email notify failed: {e}")
 
     return {
         "ok": True,
-        "msg": f"Tenant '{t.name}' approved and namespace '{ns_name}' with SA created"
+        "msg": f"Tenant '{t.name}' approved; namespace '{ns_name}' ready; user '{user.email}' role='{user.role}'"
     }
 
 class RejectPayload(BaseModel):
