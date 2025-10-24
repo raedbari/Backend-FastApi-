@@ -192,17 +192,6 @@ async def deploy_app(spec: AppSpec, ctx: CurrentContext = Depends(get_current_co
         # عرض رسالة خطأ واضحة للـclient (يمكن تحسين الرسائل لاحقًا)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-# @api.post("/apps/scale")
-# async def scale_app(req: ScaleRequest, ctx: CurrentContext = Depends(get_current_context)):
-#     try:
-
-#         ns = verify_namespace_access(ctx)
-#        result = scale(req.name, req.replicas, namespace=ns)
-
-#         return result
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e)) from e
-
 @api.post("/apps/scale")
 async def scale_app(req: ScaleRequest, ctx: CurrentContext = Depends(get_current_context)):
     try:
@@ -316,7 +305,7 @@ def _startup():
 # Onboarding (public + admin) تحت /api
 app.include_router(onboarding_router, prefix="/api")
 app.include_router(onboarding_admin_router, prefix="/api")
-router = APIRouter(prefix="/auth")
+#router = APIRouter(prefix="/auth")
 
 # -------------------------------------------------------------------
 # 🔒 Namespace access guard (centralized)

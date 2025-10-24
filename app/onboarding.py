@@ -247,18 +247,49 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         db.rollback()
         raise HTTPException(500, detail=f"Registration failed: {str(e)}")
 
-    # 🔹 5. إشعار الإدار
+    # 🔹 5. إشعار الأدمن + بريد تأكيد للمستخدم
     if ADMIN_EMAIL:
-        _send_email(
-            ADMIN_EMAIL,
-            f"[Smart DevOps] New tenant request: {payload.company}",
-            f"Tenant: {payload.company}\nNamespace: {clean_ns}\nAdmin: {payload.email}",
+        subject_admin = f"🆕 New signup request: {payload.company}"
+        body_admin = (
+            f"A new tenant signup was received:\n\n"
+            f"Company:  {payload.company}\n"
+            f"Namespace: {clean_ns}\n"
+            f"Admin email: {payload.email}\n"
+            f"Note: {payload.note or '-'}\n"
+            f"Time (UTC): {datetime.utcnow().isoformat()}Z\n\n"
+            "You can review and approve this request in the admin panel."
         )
 
-    _send_webhook({"event": "tenant.register", "company": payload.company, "email": payload.email})
+        try:
+            send_email(ADMIN_EMAIL, subject_admin, body_admin)
+            print(f"✅ Signup notification sent to admin {ADMIN_EMAIL}")
+        except Exception as e:
+            print(f"⚠️ Failed to send admin notification: {e}")
+
+    # 🔹 5.1 إرسال تأكيد للمستخدم نفسه
+    try:
+        subject_user = "✅ Smart DevOps — Signup Request Received"
+        body_user = (
+            f"Hi,\n\nThanks for signing up to Smart DevOps Platform!\n"
+            f"We've received your request for company '{payload.company}' "
+            f"and will review it shortly.\n\n"
+            "Once approved, you'll receive an email with activation details.\n\n"
+            "Best regards,\nSmart DevOps Team"
+        )
+        send_email(payload.email, subject_user, body_user)
+        print(f"📩 Confirmation email sent to user {payload.email}")
+    except Exception as e:
+        print(f"⚠️ Failed to send confirmation email: {e}")
+
+    # 🔹 6. تسجيل الأحداث في النظام
+    _send_webhook({
+        "event": "tenant.register",
+        "company": payload.company,
+        "email": payload.email
+    })
     _audit(db, t.id, "register", actor=payload.email)
 
-    # 🔹 6. إنشاء التوكن المؤقت
+    # 🔹 7. إنشاء التوكن المؤقت
     token = create_access_token(
         sub=admin.email,
         tid=t.id,
