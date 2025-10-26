@@ -53,7 +53,7 @@ def init_db():
 
             admin_user = User(
                 email="raedbari@lgmail.com",
-                password_hash = pbkdf2_sha256.hash("adminadmin"),  # كلمة مرور بسيطة للاختبار
+                password_hash = pbkdf2_sha256.hash("admin123"),  # كلمة مرور بسيطة للاختبار
                 role="platform_admin",
                 tenant_id=tenant.id,
             )
