@@ -19,6 +19,7 @@ from .auth import router as auth_router
 from .auth import get_current_context, CurrentContext
 from app.mailer import send_email
 import os
+from app.monitor import router as monitor_router
 # -------------------------------------------------------------------
 # إعداد OAuth2 لقراءة التوكن من الهيدر Authorization
 # -------------------------------------------------------------------
@@ -79,6 +80,9 @@ def contact_us(payload: ContactPayload):
     send_email(payload.email, subject_user, body_user)
 
     return {"ok": True}
+
+
+app.include_router(monitor_router, prefix="/api")
 
 
 # مصادقة تحت /api
