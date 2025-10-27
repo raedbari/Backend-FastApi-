@@ -248,21 +248,35 @@ async def bluegreen_rollback(req: NameNS, ctx: CurrentContext = Depends(get_curr
 # -------------------------------------------------------------------
 # Monitor (Grafana URL only) — tenant-scoped
 # -------------------------------------------------------------------
-def build_dashboard_url(ns: str, app_name: str) -> str:
+def build_dashboard_url(ns: str, app_name: str, kind: str = "app") -> str:
+    base = (os.getenv("GRAFANA_URL", "https://grafana.smartdevops.lat")).rstrip("/")
 
-    base = (os.getenv("GRAFANA_URL") or "").rstrip("/")
-    if not base:
-        raise RuntimeError("GRAFANA_URL is not set")
+    dashboards = {
+        "app": {
+            "uid": os.getenv("GRAFANA_APP_UID", "app-metrics"),
+            "slug": os.getenv("GRAFANA_APP_SLUG", "application-metrics"),
+        },
+        "namespace": {
+            "uid": os.getenv("GRAFANA_NS_UID", "ns-overview"),
+            "slug": os.getenv("GRAFANA_NS_SLUG", "namespace-overview"),
+        },
+        "logs": {
+            "uid": os.getenv("GRAFANA_LOGS_UID", "app-logs"),
+            "slug": os.getenv("GRAFANA_LOGS_SLUG", "application-logs"),
+        },
+    }
 
-    uid = (os.getenv("GRAFANA_DASHBOARD_UID") or "").strip()
-    slug = (os.getenv("GRAFANA_DASHBOARD_SLUG") or "kubernetes-app").strip()
+    if kind not in dashboards:
+        raise ValueError(f"Unknown dashboard type: {kind}")
 
-    if uid:
+    d = dashboards[kind]
+    url = f"{base}/d/{d['uid']}/{d['slug']}?orgId=1&var-namespace={ns}"
 
-        return f"{base}/d/{uid}/{slug}?var-namespace={ns}&var-app={app_name}"
+    if kind in ("app", "logs"):
+        url += f"&var-app={app_name}"
 
-    return f"{base}/?orgId=1"
-
+    url += "&from=now-1h&to=now"
+    return url
 
 
 monitor = APIRouter(prefix="/api/monitor", tags=["monitor"])

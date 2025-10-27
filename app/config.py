@@ -18,3 +18,11 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 SMTP_FROM = os.getenv("SMTP_FROM", "admin@smartdevops.lat")
+
+# Grafana settings
+GRAFANA_URL = os.getenv("GRAFANA_URL", "https://grafana.smartdevops.lat").rstrip("/")
+GRAFANA_API_TOKEN = os.getenv("GRAFANA_API_TOKEN", "")  # لا تضع القيمة هنا، ستكون Secret
+GRAFANA_ORG_ID = int(os.getenv("GRAFANA_ORG_ID", "1"))
+
+# Frontend CORS (موجود عندك كـ FRONTEND_ORIGIN في .env)
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://smartdevops.lat")

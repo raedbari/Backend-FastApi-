@@ -206,3 +206,31 @@ async def k8s_events(ns: str, app: str, since: Optional[int]=3600):
                 "obj": {"kind": e.regarding.kind, "name": e.regarding.name}
             })
     return {"items": out} 
+
+# --------------------------------------------------------------------
+# ------------------------- Grafana Link -----------------------------
+# --------------------------------------------------------------------
+@router.get("/grafana_link")
+async def grafana_link(ns: str, app: str, kind: str = "app"):
+    """
+    يعيد رابط Grafana الصحيح حسب نوع العرض (تطبيق أو Namespace)
+    kind = app | ns | logs
+    """
+    base = os.environ.get("GRAFANA_URL", "").rstrip("/")
+    if not base:
+        raise HTTPException(500, "GRAFANA_URL not configured")
+
+    if kind == "app":
+        uid = os.getenv("GRAFANA_APP_UID", "app-metrics")
+        slug = os.getenv("GRAFANA_APP_SLUG", "application-metrics")
+    elif kind == "ns":
+        uid = os.getenv("GRAFANA_NS_UID", "ns-overview")
+        slug = os.getenv("GRAFANA_NS_SLUG", "namespace-overview")
+    elif kind == "logs":
+        uid = os.getenv("GRAFANA_LOGS_UID", "app-logs")
+        slug = os.getenv("GRAFANA_LOGS_SLUG", "application-logs")
+    else:
+        raise HTTPException(400, f"Invalid kind: {kind}")
+
+    url = f"{base}/d/{uid}/{slug}?orgId=1&var-namespace={ns}&var-app={app}&from=now-1h&to=now"
+    return {"grafana_url": url}
