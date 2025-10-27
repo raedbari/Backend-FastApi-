@@ -348,7 +348,7 @@ def list_pending(
 #     pass
 
 class ApprovePayload(BaseModel):
-    role: str | None = "client"  # 👈 الدور الذي يُرسل من الواجهة (client أو devops)
+    role: str
 
 
 @admin_router.post("/{tenant_id}/approve")
