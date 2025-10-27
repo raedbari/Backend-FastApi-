@@ -355,9 +355,10 @@ class ApprovePayload(BaseModel):
 def approve(
     tenant_id: int,
     body: ApprovePayload | None = None,
-    bg: BackgroundTasks = Depends(),
+    bg: BackgroundTasks,
     ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
+
 ):
     _ensure_admin(ctx)
 
