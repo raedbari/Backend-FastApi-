@@ -354,8 +354,8 @@ class ApprovePayload(BaseModel):
 @admin_router.post("/{tenant_id}/approve")
 def approve(
     tenant_id: int,
-    body: ApprovePayload | None = None,
     bg: BackgroundTasks,
+    body: ApprovePayload | None = None,
     ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
 
