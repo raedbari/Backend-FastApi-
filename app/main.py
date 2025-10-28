@@ -348,3 +348,11 @@ def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None
     # المسؤول مسموح له تحديد أي ns؛ إن لم يمرِّر، استخدم ns من السياق
     return requested_ns or user_ns
 
+from app.alerts.webhook import router as alerts_router
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
+# ربط راوتر التنبيهات
+app.include_router(alerts_router)
