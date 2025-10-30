@@ -180,6 +180,7 @@ def _provision_tenant(tenant_id: int):
         db.close()
 
 # ---------- public endpoints ----------
+# ---------- public endpoints ----------
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
     # 🔹 1. تنظيف الـ namespace
@@ -207,8 +208,8 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     if rejected_tenants:
         db.commit()
 
-    # 🔹 3. التحقق من وجود Tenant نشط أو قيد الانتظار
-    existing = db.execute(
+    # 🔹 3. التحقق من وجود Tenant بنفس الاسم أو namespace
+    existing_tenant = db.execute(
         select(Tenant).where(
             or_(
                 Tenant.name == payload.company,
@@ -218,30 +219,36 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         )
     ).scalar_one_or_none()
 
-    if existing:
-        raise HTTPException(409, detail="Company or namespace already exists")
-
-    # 🔹 4. إنشاء tenant والمستخدم داخل معاملة واحدة لضمان التزامن
     try:
-        # إنشاء Tenant جديد
-        t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
-        db.add(t)
-        db.flush()  # نحصل على ID بدون commit بعد
+        # ✅ إذا لم يوجد Tenant، ننشئ واحد جديد
+        if not existing_tenant:
+            t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
+            db.add(t)
+            db.flush()
+        else:
+            # ✅ موجود بالفعل، نستخدمه
+            t = existing_tenant
 
-        # إنشاء المستخدم
+        # ✅ تحقق من أن المستخدم غير مسجل مسبقًا داخل نفس الشركة
+        user_exists = db.execute(
+            select(User).where(User.email == payload.email, User.tenant_id == t.id)
+        ).scalar_one_or_none()
+
+        if user_exists:
+            raise HTTPException(409, detail="User with this email already exists in the company.")
+
+        # ✅ إنشاء المستخدم الجديد
         pwd_hash = pbkdf2_sha256.hash(payload.password)
-        admin = User(
+        new_user = User(
             email=payload.email,
             password_hash=pwd_hash,
             role="pending_user",
             tenant_id=t.id
         )
-        db.add(admin)
-
-        # الآن فقط نُثبّت العملية في القاعدة
+        db.add(new_user)
         db.commit()
         db.refresh(t)
-        db.refresh(admin)
+        db.refresh(new_user)
 
     except Exception as e:
         db.rollback()
@@ -251,10 +258,10 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     if ADMIN_EMAIL:
         subject_admin = f"🆕 New signup request: {payload.company}"
         body_admin = (
-            f"A new tenant signup was received:\n\n"
+            f"A new signup was received:\n\n"
             f"Company:  {payload.company}\n"
             f"Namespace: {clean_ns}\n"
-            f"Admin email: {payload.email}\n"
+            f"Email: {payload.email}\n"
             f"Note: {payload.note or '-'}\n"
             f"Time (UTC): {datetime.utcnow().isoformat()}Z\n\n"
             "You can review and approve this request in the admin panel."
@@ -291,7 +298,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
 
     # 🔹 7. إنشاء التوكن المؤقت
     token = create_access_token(
-        sub=admin.email,
+        sub=new_user.email,
         tid=t.id,
         ns=None,
         role="pending_user",
@@ -299,7 +306,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
 
     return {
         "ok": True,
-        "msg": "Tenant registered successfully. Pending approval.",
+        "msg": "Registration successful. Pending approval.",
         "access_token": token,
         "token_type": "bearer"
     }
