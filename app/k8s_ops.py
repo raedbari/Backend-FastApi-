@@ -74,7 +74,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
 
     dep_spec = client.V1DeploymentSpec(
         replicas=spec.replicas or 1,
-        selector=client.V1LabelSelector(match_labels={"app": name}),
+        selector=client.V1LabelSelector(match_labels={"app": name}), 
         template=pod_template,
         strategy=client.V1DeploymentStrategy(
             type="RollingUpdate",
