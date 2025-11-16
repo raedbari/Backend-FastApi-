@@ -414,87 +414,55 @@ def get_preview_ready(app_label: str, ns: str) -> bool:
 
 # ----------------------------- Blue/Green ops -----------------------------
 
-def bg_prepare(spec: AppSpec) -> dict:
-    
-    ns   = spec.namespace or get_namespace()
+def bg_prepare(spec: AppSpec):
+    ns = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
     app_label = spec.effective_app_label
     preview_name = f"{app_label}-preview"
 
-    # Build the container and specs as in upsert_deployment but with role=preview
-    name   = preview_name
-    port   = spec.effective_port
-    path   = spec.effective_health_path
-    labels = _labels_for(app_label, "preview")
-
-    # Resource/security handling same as in upsert_deployment
-    sc = client.V1SecurityContext(allow_privilege_escalation=False)
-    if not getattr(spec, "compat_mode", False) and getattr(spec, "run_as_non_root", True):
-        sc.run_as_non_root = True
-        sc.run_as_user = getattr(spec, "run_as_user", None) or 1001
-
-    default_resources = {
-        "requests": {"cpu": "20m", "memory": "64Mi"},
-        "limits":   {"cpu": "200m", "memory": "256Mi"},
+    labels = {
+        "app": app_label,
+        "role": "preview",
+        "app.kubernetes.io/managed-by": "cloud-devops-platform"
     }
-    res = spec.resources or default_resources
-    resources = client.V1ResourceRequirements(
-        requests=res.get("requests", default_resources["requests"]),
-        limits=res.get("limits",   default_resources["limits"]),
-    )
 
     container = client.V1Container(
         name=app_label,
-        image=(f"{spec.image}:{spec.tag}" if getattr(spec, "tag", None) else spec.image),
-        ports=[client.V1ContainerPort(container_port=port, name="http")],
-        security_context=sc,
-        resources=resources,
-        readiness_probe=client.V1Probe(
-            http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
-        ),
-        liveness_probe=client.V1Probe(
-            http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3,
-        ),
+        image=f"{spec.image}:{spec.tag}",
+        ports=[client.V1ContainerPort(container_port=spec.effective_port)],
     )
 
     pod_template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels=labels),
-        spec=client.V1PodSpec(containers=[container]),
+        spec=client.V1PodSpec(containers=[container])
     )
 
     dep_spec = client.V1DeploymentSpec(
-        replicas=spec.replicas or 1,
-        selector=client.V1LabelSelector(match_labels={"app": app_label}),  # Do not fix role here
-        template=pod_template,
-        strategy=client.V1DeploymentStrategy(
-            type="RollingUpdate",
-            rolling_update=client.V1RollingUpdateDeployment(max_surge=1, max_unavailable=0),
+        replicas=1,
+        selector=client.V1LabelSelector(
+            match_labels={"app": app_label, "role": "preview"}  # ← مهم جداً
         ),
+        template=pod_template
     )
 
     body = client.V1Deployment(
-        api_version="apps/v1",
-        kind="Deployment",
-        metadata=client.V1ObjectMeta(name=name, namespace=ns, labels=labels),
-        spec=dep_spec,
+        metadata=client.V1ObjectMeta(name=preview_name, labels=labels),
+        spec=dep_spec
     )
 
     try:
-        apps.read_namespaced_deployment(name=name, namespace=ns)
-        resp = apps.patch_namespaced_deployment(name=name, namespace=ns, body=body)
+        apps.read_namespaced_deployment(preview_name, ns)
+        resp = apps.patch_namespaced_deployment(preview_name, ns, body)
     except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            resp = apps.create_namespaced_deployment(namespace=ns, body=body)
+        if e.status == 404:
+            resp = apps.create_namespaced_deployment(ns, body)
         else:
             raise
 
-    return {"preview": resp.to_dict()}
+    return {"ok": True, "preview": resp.to_dict()}
 
-
-def bg_promote(name: str, namespace: str) -> dict:
+def bg_promote(name: str, namespace: str):
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
@@ -503,7 +471,7 @@ def bg_promote(name: str, namespace: str) -> dict:
     active = None
 
     for d in deps:
-        role = (d.metadata.labels or {}).get("role", "")
+        role = d.metadata.labels.get("role", "")
         if role == "preview":
             preview = d
         elif role == "active":
@@ -512,51 +480,53 @@ def bg_promote(name: str, namespace: str) -> dict:
     if not preview:
         raise ApiException(status=404, reason="No preview deployment found")
 
-    # Promote preview → active
+    # 1) Preview becomes active + scale to 1
     _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
+    apps.patch_namespaced_deployment_scale(
+        preview.metadata.name, ns, {"spec": {"replicas": 1}}
+    )
 
-    # Demote active → idle
+    # 2) Old active becomes idle + scale to 0
     if active:
         _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
+        apps.patch_namespaced_deployment_scale(
+            active.metadata.name, ns, {"spec": {"replicas": 0}}
+        )
 
-    return {
-        "ok": True,
-        "promoted": preview.metadata.name,
-        "demoted": active.metadata.name if active else None
-    }
+    return {"ok": True}
 
-def bg_rollback(name: str, namespace: str) -> dict:
-   
+def bg_rollback(name: str, namespace: str):
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
     deps = _find_deployments_by_app(apps, ns, name)
-    preview = None
-    active  = None
-    idle    = []
+    active = None
+    idle = None
 
     for d in deps:
-        role = (d.metadata.labels or {}).get("role", "")
-        if role == "preview":
-            preview = d
-        elif role == "active":
+        role = d.metadata.labels.get("role", "")
+        if role == "active":
             active = d
         elif role == "idle":
-            idle.append(d)
+            idle = d
 
-    if active and preview:
-        _patch_deploy_labels(apps, ns, active.metadata.name, "preview")
-        _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
-        return {"ok": True, "swapped": [active.metadata.name, preview.metadata.name]}
+    if not idle:
+        return {"note": "No idle version to rollback to"}
 
-    if not active and preview:
-        # No active exists; promote preview to active
-        _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
-        return {"ok": True, "promoted_from_preview": preview.metadata.name}
+    # 1) idle → active (turn on)
+    _patch_deploy_labels(apps, ns, idle.metadata.name, "active")
+    apps.patch_namespaced_deployment_scale(
+        idle.metadata.name, ns, {"spec": {"replicas": 1}}
+    )
 
-    # No clear action
-    return {"ok": True, "note": "No rollback action performed"}
+    # 2) active → idle (turn off)
+    if active:
+        _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
+        apps.patch_namespaced_deployment_scale(
+            active.metadata.name, ns, {"spec": {"replicas": 0}}
+        )
 
+    return {"ok": True}
 
 from kubernetes import config
 try:
