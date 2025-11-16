@@ -1,16 +1,16 @@
 # app/config.py
 import os
 
-# 🔐 مدة صلاحية التوكنات (بالساعات)
+# 🔐 Token validity period (in hours)
 JWT_EXP_HOURS = int(os.getenv("JWT_EXP_HOURS", "24"))
 
-# 🧩 البريد الإلكتروني للإشعارات (اختياري)
+# 🧩 Notification email (optional)
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 
-# 🔑 المفتاح السري لـ JWT
+# 🔑 JWT secret key
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-key")
 
-# ⚙️ خوارزمية التوقيع
+# ⚙️ Signing algorithm
 JWT_ALG = os.getenv("JWT_ALG", "HS256")
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
@@ -21,8 +21,8 @@ SMTP_FROM = os.getenv("SMTP_FROM", "admin@smartdevops.lat")
 
 # Grafana settings
 GRAFANA_URL = os.getenv("GRAFANA_URL", "https://grafana.smartdevops.lat").rstrip("/")
-GRAFANA_API_TOKEN = os.getenv("GRAFANA_API_TOKEN", "")  # لا تضع القيمة هنا، ستكون Secret
+GRAFANA_API_TOKEN = os.getenv("GRAFANA_API_TOKEN", "")  # Do not set the value here; it should be a Secret
 GRAFANA_ORG_ID = int(os.getenv("GRAFANA_ORG_ID", "1"))
 
-# Frontend CORS (موجود عندك كـ FRONTEND_ORIGIN في .env)
+# Frontend CORS (available as FRONTEND_ORIGIN in .env)
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://smartdevops.lat")

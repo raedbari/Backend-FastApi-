@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 import os
 from sqlalchemy import (
     Column, Integer, String, Index, DateTime, ForeignKey, func,
-    UniqueConstraint, CheckConstraint
+    UniqueConstraint, CheckConstraint, Text
 )
 from sqlalchemy.orm import relationship
 
@@ -30,38 +30,30 @@ class EnvVar(BaseModel):
 
 class AppSpec(BaseModel):
     """Application contract for deployments/adoption."""
-    # Security behavior (used dynamically in k8s_ops.py)
     compat_mode: bool = False
     run_as_non_root: bool = True
     run_as_user: Optional[int] = 1001
 
-    # Resource names / selectors
     name: str = Field(..., pattern=DNS1123_LABEL, description="K8s resource name")
     app_label: Optional[str] = None
     service_name: Optional[str] = None
     container_name: Optional[str] = None
 
-    # Namespace
     namespace: str = Field(default=DEFAULT_NS, pattern=DNS1123_LABEL)
 
-    # Image & runtime
     image: str
     tag: str
     port: int = Field(..., ge=1, le=65535)
 
-    # HTTP paths
     health_path: str = "/healthz"
     readiness_path: str = "/ready"
     metrics_path: str = "/metrics"
 
-    # Scaling & env
     replicas: int = Field(1, ge=1, le=50)
     env: List[EnvVar] = Field(default_factory=list)
 
-    # Resources (leave None -> defaults applied in k8s_ops.py)
     resources: Optional[Dict[str, Dict[str, str]]] = None
 
-    # --------- convenience computed properties ---------
     @property
     def full_image(self) -> str:
         return f"{self.image}:{self.tag}"
@@ -128,13 +120,11 @@ class Tenant(Base):
     __tablename__ = "tenants"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(200), nullable=False, unique=True)              # اسم العميل
-    # nullable=True حتى الموافقة (namespace يُنشأ بالتزويد)
+    name = Column(String(200), nullable=False, unique=True)
     k8s_namespace = Column(String(200), nullable=True, unique=True)
-    status = Column(String(50), nullable=False, default="pending")       # pending / active / suspended / rejected
+    status = Column(String(50), nullable=False, default="pending")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
-    # علاقة مستخدمين ← عميل
     users = relationship("User", back_populates="tenant", cascade="all,delete-orphan")
 
     __table_args__ = (
@@ -150,22 +140,16 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    # فريد عالميًا بما يطابق منطق /auth/signup و /auth/login
     email = Column(String(200), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), nullable=False, default="admin")            # admin / user
+    role = Column(String(50), nullable=False, default="admin")
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
 
-    __table_args__ = (
-        
-        Index("ix_users_tenant_id", "tenant_id"),
-    )
+    __table_args__ = (Index("ix_users_tenant_id", "tenant_id"),)
 
-# --- Lightweight audit & provisioning runs ---
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, func, Text
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
@@ -175,6 +159,7 @@ class AuditLog(Base):
     actor_email = Column(String(200), nullable=False)
     result = Column(String(200), nullable=False, default="ok")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
+
 
 class ProvisioningRun(Base):
     __tablename__ = "provisioning_runs"

@@ -1,3 +1,4 @@
+#mailer.py
 import smtplib
 from email.mime.text import MIMEText
 from app.config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM

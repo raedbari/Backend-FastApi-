@@ -11,12 +11,7 @@ _api_client: Optional[k8s_client.ApiClient] = None
 
 
 def _load_config() -> k8s_client.ApiClient:
-    """
-    Load Kubernetes configuration in this order:
-    1) In-cluster config (when running inside Kubernetes)
-    2) Local kubeconfig (~/.kube/config) for development
-    Returns a cached ApiClient instance.
-    """
+    
     global _api_client
     if _api_client is not None:
         return _api_client
@@ -29,13 +24,7 @@ def _load_config() -> k8s_client.ApiClient:
 
 
 def get_api_clients() -> Dict[str, object]:
-    """
-    Return commonly used Kubernetes API clients:
-      - 'apps'        -> AppsV1Api
-      - 'core'        -> CoreV1Api
-      - 'custom'      -> CustomObjectsApi
-      - 'networking'  -> NetworkingV1Api (used for Ingress)
-    """
+ 
     api = _load_config()
     return {
         "apps": k8s_client.AppsV1Api(api),
@@ -46,13 +35,7 @@ def get_api_clients() -> Dict[str, object]:
 
 
 def get_namespace() -> str:
-    """
-    Resolve the working namespace in this order:
-      1) NAMESPACE env var (or PLATFORM_NAMESPACE)
-      2) In-cluster service account namespace file
-      3) Active context namespace from kubeconfig
-      4) 'default'
-    """
+  
     ns = os.environ.get("NAMESPACE") or os.environ.get("PLATFORM_NAMESPACE")
     if ns:
         return ns

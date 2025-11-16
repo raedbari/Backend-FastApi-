@@ -17,7 +17,7 @@ Base = declarative_base()
 
 
 def get_db():
-    """Dependency: للحصول على جلسة DB داخل الـ endpoints"""
+    """Dependency: to obtain a DB session inside the endpoints"""
     db = SessionLocal()
     try:
         yield db
@@ -27,17 +27,17 @@ def get_db():
 
 def init_db():
     """
-    إنشاء الجداول + عمل Seed لعميل تجريبي (Demo) مع مستخدم admin.
-    تُستدعَى مرة عند الإقلاع (startup).
+    Create tables + seed a demo tenant with an admin user.
+    Called once during startup.
     """
     from .models import Tenant, User  # noqa
 
-    # إنشاء الجداول إن لم تكن موجودة
+    # Create tables if they don’t exist
     Base.metadata.create_all(bind=engine)
 
     # Seed
     from sqlalchemy.orm import Session
-   # from passlib.hash import bcrypt  # pip install passlib[bcrypt]
+    # from passlib.hash import bcrypt  # pip install passlib[bcrypt]
     from passlib.hash import pbkdf2_sha256
 
     with Session(engine) as db:
@@ -45,15 +45,15 @@ def init_db():
         if not tenant:
             tenant = Tenant(
                 name="Demo",
-                k8s_namespace="default",   # مؤقتًا للاختبار
+                k8s_namespace="default",   # temporary for testing
                 status="active",
             )
             db.add(tenant)
-            db.flush()  # عشان نأخذ tenant.id بعد الإدراج مباشرة
+            db.flush()  # to get tenant.id immediately after insertion
 
             admin_user = User(
                 email="raedbari@lgmail.com",
-                password_hash = pbkdf2_sha256.hash("admin123"),  # كلمة مرور بسيطة للاختبار
+                password_hash=pbkdf2_sha256.hash("admin123"),  # simple password for testing
                 role="platform_admin",
                 tenant_id=tenant.id,
             )

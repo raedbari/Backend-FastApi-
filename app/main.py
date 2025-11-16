@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 
-# مكتبات JWT للتحقق من التوكنات
+# JWT libraries for token verification
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer
 
@@ -18,15 +18,15 @@ from .db import init_db
 from .auth import router as auth_router
 from .auth import get_current_context, CurrentContext
 from app.mailer import send_email
-import os
 from app.monitor import router as monitor_router
+
 # -------------------------------------------------------------------
-# إعداد OAuth2 لقراءة التوكن من الهيدر Authorization
+# OAuth2 setup to read the token from the Authorization header
 # -------------------------------------------------------------------
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 # -------------------------------------------------------------------
-# تعريف نموذج المستخدم لتفسير بيانات الـJWT
+# User model definition for decoding JWT data
 # -------------------------------------------------------------------
 class User(BaseModel):
     email: str
@@ -35,7 +35,7 @@ class User(BaseModel):
 
 class NameNS(BaseModel):
     name: str
-    namespace: str | None = None  # متروكة للتوافق فقط؛ تُتجاهل
+    namespace: str | None = None  # kept for backward compatibility; ignored
 
 router = APIRouter(prefix="/api")
 
@@ -45,15 +45,12 @@ class ContactPayload(BaseModel):
     message: str
 
 
-
-
 # -------------------------------------------------------------------
 # FastAPI app
 # -------------------------------------------------------------------
 app = FastAPI(
     title="Cloud-Native DevOps Platform API",
     version="0.1.0",
-    
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
     description="Multi-tenant Platform API. All app endpoints are tenant-scoped via JWT.",
@@ -64,12 +61,12 @@ app = FastAPI(
 def contact_us(payload: ContactPayload):
     admin = os.getenv("ADMIN_EMAIL", "admin@smartdevops.lat")
     
-    # رسالة للأدمن
+    # Message to admin
     subject_admin = f"📩 Contact message from {payload.name}"
     body_admin = f"From: {payload.email}\n\nMessage:\n{payload.message}"
     send_email(admin, subject_admin, body_admin)
 
-    # رد تلقائي للمستخدم
+    # Auto-reply to the user
     subject_user = "✅ We've received your message"
     body_user = (
         f"Hi {payload.name},\n\n"
@@ -84,13 +81,11 @@ def contact_us(payload: ContactPayload):
 
 app.include_router(monitor_router, prefix="/api")
 
-
-# مصادقة تحت /api
+# Authentication under /api
 app.include_router(auth_router, prefix="/api")
-
 app.include_router(router)
 
-# راوتر رئيسي لكل مسارات الـAPI
+# Main router for all API endpoints
 api = APIRouter(prefix="/api", tags=["default"])
 
 # -------------------------------------------------------------------
@@ -100,7 +95,7 @@ origins = [
     o.strip()
     for o in os.getenv(
         "ALLOWED_ORIGINS",
-        "https://rango-project.duckdns.org,http://rango-project.duckdns.org,http://localhost:3000,http://localhost:3001"
+        "https://localhost:3000,http://localhost:3001"
     ).split(",")
     if o.strip()
 ]
@@ -128,7 +123,8 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-#------------------------------------------------------
+
+# -------------------------------------------------------------------
 # Basic routes
 # -------------------------------------------------------------------
 @api.get("/healthz")
@@ -148,7 +144,7 @@ async def validate_appspec(spec: AppSpec):
 # Helpers: enforce tenant namespace from JWT
 # -------------------------------------------------------------------
 def _force_ns_on_spec(spec: AppSpec, ctx: CurrentContext) -> AppSpec:
-    # تجاهل أي namespace وارد من العميل؛ نفرض ns من التوكن
+    # Ignore any namespace from client; enforce ns from token
     spec.namespace = ctx.k8s_namespace
     return spec
 
@@ -160,40 +156,35 @@ def _ctx_ns(ctx: CurrentContext) -> str:
 # -------------------------------------------------------------------
 @api.post("/apps/deploy")
 async def deploy_app(spec: AppSpec, ctx: CurrentContext = Depends(get_current_context)):
-    """
-    Deploy endpoint — نطبق قواعد الخصوصية:
-    - إن كان المستخدم عادي (admin/user): نُجبِر الـspec.namespace على قيمة ctx.k8s_namespace.
-    - إن كان platform_admin: نسمح له بتمرير namespace في payload (حتى يتمكن من إدارة أي تينانت).
-    """
+   
     try:
-        # ----- قرر الـnamespace النهائي بناءً على الدور -----
+        # ----- Decide final namespace based on role -----
         user_role = (getattr(ctx, "role", "") or "").lower()
-        token_ns = ctx.k8s_namespace  # الـnamespace من التوكن (قد تكون "default" للـplatform_admin)
+        token_ns = ctx.k8s_namespace  # namespace from token (may be "default" for platform_admin)
 
         if user_role == "platform_admin":
-            # يسمح للـplatform_admin بتحديد namespace من الـpayload (لأغراض الصيانة)
-            # إذا لم يُمرّر الـpayload namespace، نستخدم الـns من التوكن كـfallback
+            # Allow platform_admin to specify namespace in payload (for maintenance)
+            # If not provided, fallback to token namespace
             final_ns = spec.namespace or token_ns or "default"
         else:
-            # للمستخدمين العاديين/admins: نُجبِر على استخدام الـnamespace من التوكن
+            # Force token namespace for regular users/admins
             if not token_ns:
                 raise HTTPException(status_code=400, detail="No namespace assigned to your account")
             final_ns = token_ns
 
-        # فرض الـnamespace على الـspec قبل أي عملية
+        # Apply namespace before proceeding
         spec.namespace = final_ns
 
-        # تأكيد أن المستخدم يملك صلاحية هذا namespace (مركزية التحقق)
+        # Verify user has access to this namespace (centralized check)
         _ = verify_namespace_access(ctx, spec.namespace)
 
-        # تنفيذ الإنشاء/التحديث — ممرّر ctx حتى تستخدمه الدوال الداخلية عند الحاجة
-        deployment = upsert_deployment(spec)           # upsert_deployment يستخدم spec.namespace
-        service = upsert_service(spec, ctx)            # upsert_service يستعمل ctx لحماية الخصوصية
+        # Execute create/update — pass ctx for internal functions to use
+        deployment = upsert_deployment(spec)
+        service = upsert_service(spec, ctx)
         return {"deployment": deployment, "service": service}
     except HTTPException:
         raise
     except Exception as e:
-        # عرض رسالة خطأ واضحة للـclient (يمكن تحسين الرسائل لاحقًا)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @api.post("/apps/scale")
@@ -219,35 +210,31 @@ async def apps_status(
 
 
 @api.post("/apps/bluegreen/prepare")
-async def bluegreen_prepare(spec: AppSpec, ctx: CurrentContext = Depends(get_current_context)):
+async def bluegreen_prepare(spec: AppSpec):
     try:
-        spec = _force_ns_on_spec(spec, ctx)
-        _ = upsert_service(spec)  # تأكد من وجود Service تشير لـ active
+        # حدد namespace مباشرة من spec ولا تربطه ب Context
         res = bg_prepare(spec)
         return {"ok": True, **res}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api.post("/apps/bluegreen/promote")
-async def bluegreen_promote(req: NameNS, ctx: CurrentContext = Depends(get_current_context)):
+async def bluegreen_promote(req: NameNS):
     try:
-        ns = verify_namespace_access(ctx)
-        res = bg_promote(name=req.name, namespace=ns)
+        res = bg_promote(name=req.name, namespace=req.namespace)
         return {"ok": True, **res}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api.post("/apps/bluegreen/rollback")
-async def bluegreen_rollback(req: NameNS, ctx: CurrentContext = Depends(get_current_context)):
+async def bluegreen_rollback(req: NameNS):
     try:
-        ns = verify_namespace_access(ctx)
-        res = bg_rollback(name=req.name, namespace=ns)
+        res = bg_rollback(name=req.name, namespace=req.namespace)
         return {"ok": True, **res}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # -------------------------------------------------------------------
 # Monitor (Grafana URL only) — tenant-scoped
@@ -288,11 +275,9 @@ monitor = APIRouter(prefix="/api/monitor", tags=["monitor"])
 
 @monitor.get("/grafana_url")
 def grafana_url(
-
     app: str = Query(..., alias="app"),
     ctx: CurrentContext = Depends(get_current_context),
 ):
-
     try:
         ns = verify_namespace_access(ctx)
         url = build_dashboard_url(ns, app)
@@ -300,7 +285,7 @@ def grafana_url(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# توافق قديم: يعتمد الآن على JWT
+# Backward compatibility: now relies on JWT
 @monitor.get("/apps", response_model=StatusResponse)
 async def legacy_apps_status(
     name: str | None = Query(default=None),
@@ -308,7 +293,7 @@ async def legacy_apps_status(
 ):
     return await apps_status(name=name, ctx=ctx)
 
-# ضم الراوترا
+# Include routers
 app.include_router(api)
 app.include_router(monitor)
 
@@ -317,24 +302,17 @@ app.include_router(monitor)
 # -------------------------------------------------------------------
 @app.on_event("startup")
 def _startup():
-
     init_db()
 
-# Onboarding (public + admin) تحت /api
+# Onboarding (public + admin) under /api
 app.include_router(onboarding_router, prefix="/api")
 app.include_router(onboarding_admin_router, prefix="/api")
-#router = APIRouter(prefix="/auth")
 
 # -------------------------------------------------------------------
 # 🔒 Namespace access guard (centralized)
 # -------------------------------------------------------------------
 def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None) -> str:
-    """
-    يُعيد الـnamespace المسموح استعماله للطلب الحالي.
-    - غير المدير: يُجبر على ctx.k8s_namespace، ويرفض أي requested_ns مختلف.
-    - المدير/المالك: يسمح بالـrequested_ns إن وُجد، وإلا يعيد ctx.k8s_namespace.
-    ملاحظة: إذا لم يوفّر CurrentContext الدور، نعامل الطلب كـ"غير مدير".
-    """
+  
     user_ns = getattr(ctx, "k8s_namespace", None)
     user_role = (getattr(ctx, "role", None) or getattr(ctx, "user_role", None) or "").lower()
 
@@ -343,10 +321,11 @@ def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None
     if not is_admin:
         if requested_ns and requested_ns != user_ns:
             raise HTTPException(status_code=403, detail="Access denied for this namespace")
-        return user_ns or requested_ns  # يظل يجبر على ns من السياق
+        return user_ns or requested_ns
 
-    # المسؤول مسموح له تحديد أي ns؛ إن لم يمرِّر، استخدم ns من السياق
+    # Admin is allowed any ns; if not provided, use ns from context
     return requested_ns or user_ns
+
 
 from app.alerts.webhook import router as alerts_router
 
@@ -354,5 +333,5 @@ from app.alerts.webhook import router as alerts_router
 def startup_event():
     init_db()
 
-# ربط راوتر التنبيهات
+# Attach alerts router
 app.include_router(alerts_router)

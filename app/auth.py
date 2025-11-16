@@ -69,8 +69,8 @@ def create_access_token(*, sub: str, tid: int, ns: str | None, role: str) -> str
     now = datetime.utcnow()
     to_encode = {
         "sub": sub,
-        "tid": tid,            # tenant_id
-        "ns": ns,              # namespace المسموح (قد يكون None قبل الموافقة)
+        "tid": tid,           
+        "ns": ns,              
         "role": role,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(hours=JWT_EXP_HOURS)).timestamp()),

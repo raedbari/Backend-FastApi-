@@ -212,10 +212,7 @@ async def k8s_events(ns: str, app: str, since: Optional[int]=3600):
 # --------------------------------------------------------------------
 @router.get("/grafana_link")
 async def grafana_link(ns: str, app: str, kind: str = "app"):
-    """
-    يعيد رابط Grafana الصحيح حسب نوع العرض (تطبيق أو Namespace)
-    kind = app | ns | logs
-    """
+    
     base = os.environ.get("GRAFANA_URL", "").rstrip("/")
     if not base:
         raise HTTPException(500, "GRAFANA_URL not configured")

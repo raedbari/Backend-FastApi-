@@ -22,10 +22,10 @@ except Exception:
 from .k8s_client import get_api_clients, get_namespace, platform_labels
 from .models import AppSpec, StatusItem, StatusResponse
 
+# ============================================================
+# 🧩  Create or Update the Deployment
+# ============================================================
 
-# ============================================================
-# 🧩  إنشاء أو تحديث الـ Deployment
-# ============================================================
 def upsert_deployment(spec: AppSpec) -> dict:
     ns   = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
@@ -98,8 +98,9 @@ def upsert_deployment(spec: AppSpec) -> dict:
         else:
             raise
     return resp.to_dict()
+
 # ============================================================
-# 🌐 إنشاء Ingress تلقائيًا (يدعم TLS + اكتشاف المنفذ + حماية الخصوصية)
+# 🌐 Automatically create Ingress (supports TLS + port discovery + privacy protection)
 # ============================================================
 
 from kubernetes import client
@@ -109,41 +110,35 @@ from .auth import get_current_context
 
 
 def create_ingress_for_app(app_name: str, namespace: str , ctx=None):
-    """
-    إنشاء Ingress لتطبيق معين داخل Namespace محدد،
-    مع دعم TLS واكتشاف المنفذ التلقائي، واحترام صلاحيات المستخدم.
-    """
+    
     clients = get_api_clients()
     net_api = clients["networking"]
     core_api = clients["core"]
 
-   # 👇 لا تستدعي get_current_context هنا أبداً
     if ctx is None:
        ctx = get_current_context()
     role = getattr(ctx, "role", "")
 
-  
-
-    # 🚫 منع platform_admin من إنشاء أي مورد داخل namespaces العملاء
+    # 🚫 Prevent platform_admin from creating any resource inside customer namespaces
     if role == "platform_admin" and namespace != "default":
-        print(f"🚫 منع platform_admin من إنشاء Ingress داخل namespace العملاء ({namespace})")
+        print(f"🚫 platform_admin is not allowed to create Ingress inside customer namespaces ({namespace})")
         return
 
-    # 🚫 منع أي مستخدم آخر من النشر داخل default
+    #  Prevent any other user from deploying inside default namespace
     if role != "platform_admin" and namespace == "default":
-        print(f"🚫 لا يُسمح للمستخدم '{role}' بالنشر داخل namespace 'default'")
+        print(f"🚫 User '{role}' is not allowed to deploy inside 'default' namespace")
         return
 
     host = f"{app_name}.{namespace}.apps.smartdevops.lat"
     ingress_name = f"{app_name}-ingress"
     tls_secret = f"{app_name}-tls"
 
-    # 🔍 اكتشاف المنفذ من Service
+    #  Detect port from Service
     try:
         svc = core_api.read_namespaced_service(app_name, namespace)
         port_number = svc.spec.ports[0].port if svc.spec.ports else 8080
     except ApiException:
-        print(f"⚠️ Service {app_name} غير موجود في {namespace}، سيتم استخدام المنفذ الافتراضي 8080.")
+        print(f"⚠️ Service {app_name} not found in {namespace}, using default port 8080.")
         port_number = 8080
 
     ingress_manifest = client.V1Ingress(
@@ -183,41 +178,39 @@ def create_ingress_for_app(app_name: str, namespace: str , ctx=None):
     try:
         existing = net_api.read_namespaced_ingress(ingress_name, namespace)
         net_api.delete_namespaced_ingress(ingress_name, namespace)
-        print(f"♻️ حذف Ingress قديم {ingress_name} في {namespace} — سيتم إعادة إنشائه.")
+        print(f"♻️ Old Ingress {ingress_name} deleted in {namespace} — it will be recreated.")
     except ApiException as e:
         if getattr(e, "status", None) != 404:
-            print(f"⚠️ فشل التحقق من Ingress الحالي: {e}")
+            print(f"⚠️ Failed to check existing Ingress: {e}")
 
     try:
         net_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
-        print(f"✅ تم إنشاء Ingress {ingress_name} بنجاح في {namespace}")
-        print(f"🌍 الرابط: https://{host}")
+        print(f"✅ Ingress {ingress_name} created successfully in {namespace}")
+        print(f"🌍 URL: https://{host}")
     except ApiException as e:
-        print(f"❌ فشل إنشاء Ingress: {e}")
+        print(f"❌ Failed to create Ingress: {e}")
         raise
 
 
+
 # ============================================================
-# ⚙️ إنشاء أو تحديث الـService + Ingress (نسخة آمنة ومحكومة بالأدوار)
+# ⚙️ Create or Update Service + Ingress (Secure and Role-Based Version)
 # ============================================================
 def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
-    """
-    ينشئ أو يحدّث Service داخل الـnamespace الصحيح،
-    مع احترام صلاحيات المستخدم ومنع أي تجاوز على خصوصية العملاء.
-    """
+  
     current_ctx = ctx or get_current_context()
     role = getattr(current_ctx, "role", "")
     ns = getattr(current_ctx, "k8s_namespace", None) or getattr(spec, "namespace", None) or "default"
 
-    # 🚫 حماية الخصوصية: لا يُسمح لـ platform_admin بالدخول إلى namespaces العملاء
+    # 🚫 Privacy protection: platform_admin is not allowed to access customer namespaces
     if role == "platform_admin" and ns != "default":
-        raise PermissionError(f"🚫 لا يُسمح لـ platform_admin بالنشر داخل namespaces العملاء ({ns}).")
+        raise PermissionError(f"🚫 platform_admin is not allowed to deploy inside customer namespaces ({ns}).")
 
-    # 🚫 لا يُسمح لأي مستخدم آخر بالنشر داخل default
+    # 🚫 No other user is allowed to deploy inside the default namespace
     if role != "platform_admin" and ns == "default":
-        raise PermissionError(f"🚫 لا يُسمح للمستخدم '{role}' بالنشر داخل namespace 'default'.")
+        raise PermissionError(f"🚫 User '{role}' is not allowed to deploy inside namespace 'default'.")
 
-    print(f"🧭 المستخدم '{role}' يعمل ضمن namespace: {ns}")
+    print(f"🧭 User '{role}' is working within namespace: {ns}")
 
     core = get_api_clients()["core"]
     app_label = spec.effective_app_label
@@ -251,7 +244,7 @@ def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
             ),
         )
         resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
-        print(f"🔄 تم تحديث Service {svc_name} في {ns}")
+        print(f"🔄 Service {svc_name} updated in {ns}")
     except ApiException as e:
         if getattr(e, "status", None) == 404:
             create_body = client.V1Service(
@@ -272,32 +265,31 @@ def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
                 ),
             )
             resp = core.create_namespaced_service(namespace=ns, body=create_body)
-            print(f"✅ تم إنشاء Service {svc_name} في {ns}")
+            print(f"✅ Service {svc_name} created in {ns}")
         else:
             raise
 
     try:
-        print(f"🚀 إنشاء Ingress للتطبيق {app_label} في {ns}")
+        print(f"🚀 Creating Ingress for app {app_label} in {ns}")
         create_ingress_for_app(app_label, ns, ctx=current_ctx)
     except Exception as e:
-        print(f"⚠️ فشل إنشاء أو تحديث Ingress للتطبيق {app_label} في {ns}: {e}")
+        print(f"⚠️ Failed to create or update Ingress for app {app_label} in {ns}: {e}")
 
     return resp.to_dict()
 
 # ---- Status / Scale / Blue-Green (Part 2/3) ----
 
 def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> StatusResponse:
-    """Status for one/all managed Deployments in the resolved namespace."""
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
-    # احصل على قائمة الـ Deployments
+    # Get the list of Deployments
     if name:
         try:
             d = apps.read_namespaced_deployment(name=name, namespace=ns)
             deployments = [d]
         except ApiException:
-            # لا نكسر الـAPI: نرجّع قائمة فارغة
+            # Don't break the API: return an empty list
             return StatusResponse(items=[])
     else:
         deployments = apps.list_namespaced_deployment(
@@ -311,7 +303,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
         spec = d.spec or client.V1DeploymentSpec()
         status = d.status or client.V1DeploymentStatus()
 
-        # الصورة
+        # Image
         image = ""
         try:
             containers = (spec.template.spec.containers or [])
@@ -320,21 +312,21 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
         except Exception:
             pass
 
-        # الشروط
+        # Conditions
         conds = {c.type: c.status for c in (status.conditions or [])}
 
-        # اسم/ليبل التطبيق
+        # App name/label
         d_name = d.metadata.name
         d_labels = d.metadata.labels or {}
         app_label = d_labels.get("app", d_name)
 
-        # الـ Service selector (اختياري)
+        # Service selector (optional)
         try:
             svc_sel = get_service_selector(app_label, ns)
         except Exception:
             svc_sel = {}
 
-        # حالة الـ preview (اختياري)
+        # Preview status (optional)
         try:
             prev_ok = get_preview_ready(app_label, ns)
         except Exception:
@@ -353,13 +345,11 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
                 preview_ready=prev_ok,
             )
         )
-        
 
     return StatusResponse(items=items)
 
 
 def scale(name: str, replicas: int, namespace: Optional[str] = None) -> Dict:
-    """Patch the Scale subresource of a Deployment in the resolved namespace."""
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
     body = {"spec": {"replicas": replicas}}
@@ -368,12 +358,11 @@ def scale(name: str, replicas: int, namespace: Optional[str] = None) -> Dict:
 
 
 # ----------------------------- Blue/Green helpers -----------------------------
-
 def _labels_for(app_label: str, role: str) -> dict:
     return platform_labels({"app": app_label, "role": role})
 
 def _find_deployments_by_app(apps, ns: str, app_label: str):
-    # يرجع كل الدبلويمِنتات التي تحمل label app=<name>
+    # Returns all deployments that have label app=<name>
     resp = apps.list_namespaced_deployment(
         namespace=ns, label_selector=f"app={app_label}"
     )
@@ -394,18 +383,17 @@ def _scale_deploy(apps, ns: str, dep_name: str, replicas: int):
         name=dep_name, namespace=ns, body=body
     )
 
-# ---- Helpers كانت مُستخدمة وغير معرّفة في الكود الأصلي ----
+# ---- Helpers previously used but not defined in the original code ----
 def get_service_selector(app_label: str, ns: str) -> dict:
-    """يحاول قراءة Service باسم التطبيق، وإلا يبحث عن أول Service تابعة له."""
     core = get_api_clients()["core"]
-    # المحاولة 1: خدمة بنفس اسم التطبيق
+    # Attempt 1: Service with the same name as the app
     try:
         svc = core.read_namespaced_service(name=app_label, namespace=ns)
         return (svc.spec.selector or {}) if svc and svc.spec else {}
     except ApiException as e:
         if getattr(e, "status", None) != 404:
             raise
-    # المحاولة 2: أول خدمة تحمل label app=<name>
+    # Attempt 2: First service with label app=<name>
     svcs = core.list_namespaced_service(namespace=ns, label_selector=f"app={app_label}").items
     if svcs:
         s = svcs[0]
@@ -413,37 +401,34 @@ def get_service_selector(app_label: str, ns: str) -> dict:
     return {}
 
 def get_preview_ready(app_label: str, ns: str) -> bool:
-    """يعتبر الـpreview جاهزًا إذا وجدنا Deployment role=preview وبحالة متاحة."""
+    """Considers the preview ready if a Deployment with role=preview exists and is available."""
     apps = get_api_clients()["apps"]
     deps = apps.list_namespaced_deployment(namespace=ns, label_selector=f"app={app_label},role=preview").items
     if not deps:
         return False
     d = deps[0]
     st = d.status or client.V1DeploymentStatus()
-    # معيار بسيط وعملي: وجود متاحين على الأقل
+    # Simple practical check: at least one available replica
     return (st.available_replicas or 0) > 0
 
 
 # ----------------------------- Blue/Green ops -----------------------------
 
 def bg_prepare(spec: AppSpec) -> dict:
-    """
-    ينشئ/يحدّث Deployment موازي باسم <name>-preview بعلامة role=preview
-    ولا يلمس الـService (ما زالت تشير إلى role=active).
-    """
+    
     ns   = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
     app_label = spec.effective_app_label
     preview_name = f"{app_label}-preview"
 
-    # بناء الحاوية والمواصفات كما في upsert_deployment لكن role=preview
+    # Build the container and specs as in upsert_deployment but with role=preview
     name   = preview_name
     port   = spec.effective_port
     path   = spec.effective_health_path
     labels = _labels_for(app_label, "preview")
 
-    # أمن الموارد/الأمان كما في upsert_deployment
+    # Resource/security handling same as in upsert_deployment
     sc = client.V1SecurityContext(allow_privilege_escalation=False)
     if not getattr(spec, "compat_mode", False) and getattr(spec, "run_as_non_root", True):
         sc.run_as_non_root = True
@@ -482,7 +467,7 @@ def bg_prepare(spec: AppSpec) -> dict:
 
     dep_spec = client.V1DeploymentSpec(
         replicas=spec.replicas or 1,
-        selector=client.V1LabelSelector(match_labels={"app": app_label}),  # لا نثبت role هنا
+        selector=client.V1LabelSelector(match_labels={"app": app_label}),  # Do not fix role here
         template=pod_template,
         strategy=client.V1DeploymentStrategy(
             type="RollingUpdate",
@@ -511,15 +496,15 @@ def bg_prepare(spec: AppSpec) -> dict:
 
 def bg_promote(name: str, namespace: str) -> dict:
     """
-    يجعل الـpreview هو active:
+    Promotes the preview to become active:
     - role=preview  -> role=active
     - role=active   -> role=idle
-    Service selector ثابت على role=active → التحويل فوري.
+    The Service selector remains fixed on role=active → switch happens instantly.
     """
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
-    # ابحث عن كل Deployments الخاصة بالتطبيق
+    # Find all Deployments related to the app
     deps = _find_deployments_by_app(apps, ns, name)
     preview = None
     active  = None
@@ -534,24 +519,17 @@ def bg_promote(name: str, namespace: str) -> dict:
     if not preview:
         raise ApiException(status=404, reason="No preview deployment found")
 
-    # روّج الـpreview ليصبح active
+    # Promote the preview to active
     _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
 
-    # اجعل الـactive الحالي idle (إن وجد)
+    # Demote the current active to idle (if exists)
     if active:
         _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
 
     return {"ok": True, "promoted": preview.metadata.name, "demoted": getattr(active, "metadata", {}).get("name")}
 
-
 def bg_rollback(name: str, namespace: str) -> dict:
-    """
-    يعيد الـactive السابق ليكون active ويجعل الحالي preview/idle حسب الحاجة.
-    استراتيجية بسيطة:
-      - إن وُجد active و preview: بدّل الأدوار (active↔preview).
-      - إن وُجد active فقط: لا شيء يُفعل.
-      - إن وُجد preview فقط: اجعله idle (لا ترجع للخلف لعدم وجود مرجع).
-    """
+   
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
@@ -575,39 +553,17 @@ def bg_rollback(name: str, namespace: str) -> dict:
         return {"ok": True, "swapped": [active.metadata.name, preview.metadata.name]}
 
     if not active and preview:
-        # لا يوجد active؛ preview يصبح active
+        # No active exists; promote preview to active
         _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
         return {"ok": True, "promoted_from_preview": preview.metadata.name}
 
-
-
-    # لا إجراء واضح
+    # No clear action
     return {"ok": True, "note": "No rollback action performed"}
 
 
-
-
-
-
-
-
-
-
-# -- Blue/Green (Part 3/3) — cleaned ---
-# نعتمد تصميم التحويل عبر تبديل Labels فقط:
-# - preview -> active
-# - active  -> idle
-# مع بقاء Service selector ثابتًا على role=active لضمان تحويل فوري وآمن.
-# لذلك لا نحتاج دوال التلاعب بالـService selector ولا ترقيع template.labels هنا.
-# (التعريفات الموثوقة لـ bg_prepare/bg_promote/bg_rollback موجودة أعلاه في Part 2/3)
-
-# ----------------------------- Tenant Provisioning -----------------------------
-# Creates/ensures Namespace + ServiceAccount + Role + RoleBinding for a tenant.
-# Idempotent: safe to call multiple times.
-
 from kubernetes import config
 try:
-    # على بعض الإصدارات قد يختلف مسار ApiException، لذا نُحافظ على الاستيرادين
+    # In some versions, ApiException import path differs, so we keep both imports
     from kubernetes.client.exceptions import ApiException as K8sApiException  # k8s >= 28
 except Exception:  # pragma: no cover
     from kubernetes.client.rest import ApiException as K8sApiException        # k8s < 28
@@ -620,20 +576,14 @@ def _ensure_k8s_config():
         config.load_kube_config()
 
 def create_tenant_namespace(ns: str) -> dict:
-    """
-    Ensure tenant namespace resources exist (idempotent):
-    - Namespace (اختياري: لو ما عندك ClusterScope، تجاهل إنشاؤه ويكفي وجوده)
-    - ServiceAccount tenant-app-sa
-    - Role tenant-app-role (صلاحيات على Deployments/Services/Ingress داخل نفس الـns)
-    - RoleBinding يربط الـSA بالـRole
-    """
+   
     apis = get_api_clients()
     v1   = apis["core"]     # CoreV1Api
     rbac = apis["rbac"]     # RbacAuthorizationV1Api
 
     created = {"namespace": False, "serviceaccount": False, "role": False, "rolebinding": False}
 
-    # 0) حاول قراءة الـNamespace؛ إذا 404 جرّب إنشاؤه (قد تفشل 403 إن لم تكن لديك صلاحية كلستر)
+    # 0) Try to read the Namespace; if 404 then try to create it (may fail with 403 if no cluster-level permission)
     try:
         v1.read_namespace(ns)
     except ApiException as e:
@@ -643,8 +593,8 @@ def create_tenant_namespace(ns: str) -> dict:
                 v1.create_namespace(body)
                 created["namespace"] = True
             except ApiException as e2:
-                # لا صلاحية كلستر؟ لا نكسر التنفيذ—نُكمل RBAC داخل الـns على افتراض أنه صار موجودًا
-                if getattr(e2, "status", None) != 409:  # 409 = موجود
+                # No cluster permission? Don’t break execution — continue with RBAC setup assuming namespace exists
+                if getattr(e2, "status", None) != 409:  # 409 = already exists
                     pass
         elif getattr(e, "status", None) != 200:
             pass
@@ -663,26 +613,26 @@ def create_tenant_namespace(ns: str) -> dict:
         else:
             raise
 
-    # 2) Role (صلاحيات داخل الـns فقط)
+    # 2) Role (permissions limited to this namespace)
     role_name = "tenant-app-role"
     try:
         rbac.read_namespaced_role(role_name, ns)
     except ApiException as e:
         if getattr(e, "status", None) == 404:
             rules = [
-                # Deployments داخل apps
+                # Deployments under apps
                 client.V1PolicyRule(
                     api_groups=["apps"],
                     resources=["deployments"],
                     verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
                 ),
-                # Services داخل core
+                # Services under core
                 client.V1PolicyRule(
                     api_groups=[""],
                     resources=["services"],
                     verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
                 ),
-                # Ingresses داخل networking.k8s.io
+                # Ingresses under networking.k8s.io
                 client.V1PolicyRule(
                     api_groups=["networking.k8s.io"],
                     resources=["ingresses"],
@@ -698,7 +648,7 @@ def create_tenant_namespace(ns: str) -> dict:
         else:
             raise
 
-    # 3) RoleBinding (استخدم RbacV1Subject وليس V1Subject)
+    # 3) RoleBinding (use RbacV1Subject instead of V1Subject)
     rb_name = "tenant-app-binding"
     try:
         rbac.read_namespaced_role_binding(rb_name, ns)
@@ -707,7 +657,7 @@ def create_tenant_namespace(ns: str) -> dict:
             rb = client.V1RoleBinding(
                 metadata=client.V1ObjectMeta(name=rb_name, namespace=ns),
                 subjects=[
-                    client.RbacV1Subject(  # <-- هذا هو التصحيح
+                    client.RbacV1Subject(  # <-- This is the correct type
                         kind="ServiceAccount", name=sa_name, namespace=ns
                     )
                 ],
@@ -723,5 +673,3 @@ def create_tenant_namespace(ns: str) -> dict:
             raise
 
     return {"ok": True, "namespace": ns, "created": created}
-
-
