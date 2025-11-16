@@ -413,7 +413,6 @@ def get_preview_ready(app_label: str, ns: str) -> bool:
 
 
 # ----------------------------- Blue/Green ops -----------------------------
-
 def bg_prepare(spec: AppSpec):
     ns = spec.namespace or get_namespace()
     apps = get_api_clients()["apps"]
@@ -440,9 +439,7 @@ def bg_prepare(spec: AppSpec):
 
     dep_spec = client.V1DeploymentSpec(
         replicas=1,
-        selector=client.V1LabelSelector(
-            match_labels={"app": app_label, "role": "preview"}  # ← مهم جداً
-        ),
+        selector=client.V1LabelSelector(match_labels={"app": app_label}),  # ثابت ومهم
         template=pod_template
     )
 
@@ -487,6 +484,7 @@ def bg_promote(name: str, namespace: str):
     )
 
     # 2) Old active becomes idle + scale to 0
+
     if active:
         _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
         apps.patch_namespaced_deployment_scale(
