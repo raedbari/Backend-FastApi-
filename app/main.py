@@ -220,18 +220,19 @@ async def bluegreen_prepare(spec: AppSpec):
 
 
 @api.post("/apps/bluegreen/promote")
-async def bluegreen_promote(req: NameNS):
+async def bluegreen_promote(req: NameNS, user=Depends(get_current_user)):
     try:
-        res = bg_promote(name=req.name, namespace=req.namespace)
+        ns = user["namespace"]   # ← خذ namespace من JWT فقط
+        res = bg_promote(name=req.name, namespace=ns)
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @api.post("/apps/bluegreen/rollback")
-async def bluegreen_rollback(req: NameNS):
+async def bluegreen_rollback(req: NameNS, user=Depends(get_current_user)):
     try:
-        res = bg_rollback(name=req.name, namespace=req.namespace)
+        namespace = user["namespace"]  # ← ns من الـ JWT فقط
+        res = bg_rollback(name=req.name, namespace=namespace)
         return {"ok": True, **res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
