@@ -19,6 +19,7 @@ from .auth import router as auth_router
 from .auth import get_current_context, CurrentContext
 from app.mailer import send_email
 from app.monitor import router as monitor_router
+from app.config import JWT_SECRET, JWT_ALG
 
 # -------------------------------------------------------------------
 # OAuth2 setup to read the token from the Authorization header
@@ -77,6 +78,7 @@ def contact_us(payload: ContactPayload):
     send_email(payload.email, subject_user, body_user)
 
     return {"ok": True}
+
 
 
 app.include_router(monitor_router, prefix="/api")
