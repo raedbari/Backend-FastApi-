@@ -294,7 +294,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
     else:
         deployments = apps.list_namespaced_deployment(
             namespace=ns,
-            label_selector="managed-by=cloud-devops-platform",
+            label_selector="app.kubernetes.io/managed-by=cloud-devops-platform",
         ).items
 
     items: List[StatusItem] = []
