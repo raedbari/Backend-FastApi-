@@ -214,7 +214,6 @@ async def apps_status(
 @api.post("/apps/bluegreen/prepare")
 async def bluegreen_prepare(spec: AppSpec):
     try:
-        # حدد namespace مباشرة من spec ولا تربطه ب Context
         res = bg_prepare(spec)
         return {"ok": True, **res}
     except Exception as e:
@@ -223,19 +222,24 @@ async def bluegreen_prepare(spec: AppSpec):
 
 @api.post("/apps/bluegreen/promote")
 async def bluegreen_promote(req: NameNS, user=Depends(get_current_user)):
+  
     try:
-        ns = user["namespace"]   # ← خذ namespace من JWT فقط
+        ns = user["namespace"]
         res = bg_promote(name=req.name, namespace=ns)
         return {"ok": True, **res}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @api.post("/apps/bluegreen/rollback")
 async def bluegreen_rollback(req: NameNS, user=Depends(get_current_user)):
+ 
     try:
-        namespace = user["namespace"]  # ← ns من الـ JWT فقط
-        res = bg_rollback(name=req.name, namespace=namespace)
+        ns = user["namespace"]
+        res = bg_rollback(name=req.name, namespace=ns)
         return {"ok": True, **res}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
