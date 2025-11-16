@@ -495,19 +495,12 @@ def bg_prepare(spec: AppSpec) -> dict:
 
 
 def bg_promote(name: str, namespace: str) -> dict:
-    """
-    Promotes the preview to become active:
-    - role=preview  -> role=active
-    - role=active   -> role=idle
-    The Service selector remains fixed on role=active → switch happens instantly.
-    """
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
-    # Find all Deployments related to the app
     deps = _find_deployments_by_app(apps, ns, name)
     preview = None
-    active  = None
+    active = None
 
     for d in deps:
         role = (d.metadata.labels or {}).get("role", "")
@@ -519,14 +512,18 @@ def bg_promote(name: str, namespace: str) -> dict:
     if not preview:
         raise ApiException(status=404, reason="No preview deployment found")
 
-    # Promote the preview to active
+    # Promote preview → active
     _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
 
-    # Demote the current active to idle (if exists)
+    # Demote active → idle
     if active:
         _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
 
-    return {"ok": True, "promoted": preview.metadata.name, "demoted": getattr(active, "metadata", {}).get("name")}
+    return {
+        "ok": True,
+        "promoted": preview.metadata.name,
+        "demoted": active.metadata.name if active else None
+    }
 
 def bg_rollback(name: str, namespace: str) -> dict:
    
