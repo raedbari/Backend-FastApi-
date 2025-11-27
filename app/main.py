@@ -21,6 +21,8 @@ from app.mailer import send_email
 from app.monitor import router as monitor_router
 from app.config import JWT_SECRET, JWT_ALG
 
+from app.k8s_ops import delete_app
+
 # -------------------------------------------------------------------
 # OAuth2 setup to read the token from the Authorization header
 # -------------------------------------------------------------------
@@ -342,3 +344,9 @@ def startup_event():
 
 # Attach alerts router
 app.include_router(alerts_router)
+
+
+@app.delete("/apps/delete")
+def delete_app_api(ns: str, name: str):
+    return delete_app(ns, name)
+

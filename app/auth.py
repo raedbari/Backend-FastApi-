@@ -101,7 +101,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         k8s_namespace=None,
     )
     db.add(tenant)
-    db.flush()  # للحصول على tenant.id دون إنهاء المعاملة
+    db.flush() 
 
     # إنشاء User admin مرتبط بالتينانت
     user = User(
@@ -121,15 +121,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 # ----------------------------
 @router.post("/login", response_model=LoginResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    """
-    سلوك الواجهة:
-    - بيانات اعتماد خاطئة -> 404 "Not Found" (حتى لا نفضح وجود الحساب)
-    - حساب موجود لكن التينانت ليس active:
-        pending    -> 403 "Account pending approval"
-        suspended  -> 403 "Account suspended"
-        rejected   -> 403 "Account rejected"
-    - نجاح -> 200 مع JWT
-    """
+    
     resp = login_user(db, payload.email, payload.password)
     if not resp:
         # توحيد الاستجابة عند فشل الاعتماد: 404

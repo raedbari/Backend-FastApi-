@@ -638,3 +638,39 @@ def create_tenant_namespace(ns: str) -> dict:
             raise
 
     return {"ok": True, "namespace": ns, "created": created}
+
+
+def delete_app(namespace: str, name: str):
+    apps = client.AppsV1Api()
+    core = client.CoreV1Api()
+    net = client.NetworkingV1Api()
+
+    # Delete Deployment
+    try:
+        apps.delete_namespaced_deployment(name, namespace)
+    except:
+        pass
+
+    # Delete Service
+    try:
+        core.delete_namespaced_service(name, namespace)
+    except:
+        pass
+
+    # Delete Ingress
+    try:
+        net.delete_namespaced_ingress(name, namespace)
+    except:
+        pass
+
+    # Delete preview (blue/green)
+    try:
+        apps.delete_namespaced_deployment(name + "-preview", namespace)
+    except:
+        pass
+    try:
+        core.delete_namespaced_service(name + "-preview", namespace)
+    except:
+        pass
+
+    return {"ok": True, "deleted": name}
