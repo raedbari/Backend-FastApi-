@@ -346,7 +346,7 @@ def startup_event():
 app.include_router(alerts_router)
 
 
-@app.delete("/apps/delete")
+@app.post("/apps/delete")
 def delete_app_api(ns: str, name: str):
     return delete_app(ns, name)
 
