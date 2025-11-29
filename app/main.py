@@ -21,6 +21,7 @@ from app.mailer import send_email
 from app.monitor import router as monitor_router
 from app.config import JWT_SECRET, JWT_ALG
 
+from app.k8s_ops import delete_app
 
 
 # -------------------------------------------------------------------
