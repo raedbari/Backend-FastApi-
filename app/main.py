@@ -21,7 +21,7 @@ from app.mailer import send_email
 from app.monitor import router as monitor_router
 from app.config import JWT_SECRET, JWT_ALG
 
-from app.k8s_ops import delete_app
+
 
 # -------------------------------------------------------------------
 # OAuth2 setup to read the token from the Authorization header
@@ -47,6 +47,12 @@ class ContactPayload(BaseModel):
     email: str
     message: str
 
+
+from pydantic import BaseModel
+
+class DeleteModel(BaseModel):
+    ns: str
+    name: str
 
 # -------------------------------------------------------------------
 # FastAPI app
@@ -346,7 +352,7 @@ def startup_event():
 app.include_router(alerts_router)
 
 
-@app.post("/apps/delete")
-def delete_app_api(ns: str, name: str):
-    return delete_app(ns, name)
 
+@app.post("/apps/delete")
+def delete_app_api(data: DeleteModel):
+    return delete_app(data.ns, data.name)
