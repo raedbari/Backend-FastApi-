@@ -639,11 +639,13 @@ def create_tenant_namespace(ns: str) -> dict:
 
     return {"ok": True, "namespace": ns, "created": created}
 
+from kubernetes import client
 
 def delete_app(namespace: str, name: str):
     apps = client.AppsV1Api()
     core = client.CoreV1Api()
     net = client.NetworkingV1Api()
+    cert = client.CustomObjectsApi()   # ← مهم جداً
 
     # Delete Deployment
     try:
@@ -659,17 +661,38 @@ def delete_app(namespace: str, name: str):
 
     # Delete Ingress
     try:
-        net.delete_namespaced_ingress(name, namespace)
+        net.delete_namespaced_ingress(f"{name}-ingress", namespace)
     except:
         pass
 
-    # Delete preview (blue/green)
+    # ==============================
+    # DELETE Certificate CRD
+    # ==============================
     try:
-        apps.delete_namespaced_deployment(name + "-preview", namespace)
+        cert.delete_namespaced_custom_object(
+            group="cert-manager.io",
+            version="v1",
+            namespace=namespace,
+            plural="certificates",
+            name=f"{name}-tls"
+        )
     except:
         pass
+
+    # DELETE TLS Secret
     try:
-        core.delete_namespaced_service(name + "-preview", namespace)
+        core.delete_namespaced_secret(f"{name}-tls", namespace)
+    except:
+        pass
+
+    # Delete Blue/Green resources
+    try:
+        apps.delete_namespaced_deployment(f"{name}-preview", namespace)
+    except:
+        pass
+
+    try:
+        core.delete_namespaced_service(f"{name}-preview", namespace)
     except:
         pass
 
