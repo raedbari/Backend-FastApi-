@@ -48,11 +48,6 @@ class ContactPayload(BaseModel):
     message: str
 
 
-from pydantic import BaseModel
-
-class DeleteModel(BaseModel):
-    ns: str
-    name: str
 
 # -------------------------------------------------------------------
 # FastAPI app
@@ -353,6 +348,14 @@ app.include_router(alerts_router)
 
 
 
-@app.post("/apps/delete")
+router = APIRouter(prefix="/api")
+
+class DeleteModel(BaseModel):
+    ns: str
+    name: str
+
+@router.post("/apps/delete")
 def delete_app_api(data: DeleteModel):
     return delete_app(data.ns, data.name)
+
+app.include_router(router)
