@@ -12,32 +12,27 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from sqlalchemy import BigInteger
 
-# ----- K8s naming pattern & defaults -----
-DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
-
-# SQLAlchemy Base comes from app.db to avoid duplicate declarative_base()
+# SQLAlchemy Base
 from .db import Base
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import JSONB
 
 # --------------------------------------------------------------------
 # --------------------------- Pydantic -------------------------------
 # --------------------------------------------------------------------
 
+DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
+
 class EnvVar(BaseModel):
-    """Represents a container environment variable, e.g., NODE_ENV=production."""
     name: str = Field(..., min_length=1)
     value: str = Field(...)
 
-
 class AppSpec(BaseModel):
-    """Application contract for deployments/adoption."""
     compat_mode: bool = False
     run_as_non_root: bool = True
     run_as_user: Optional[int] = 1001
 
-    name: str = Field(..., pattern=DNS1123_LABEL, description="K8s resource name")
+    name: str = Field(..., pattern=DNS1123_LABEL)
     app_label: Optional[str] = None
     service_name: Optional[str] = None
     container_name: Optional[str] = None
@@ -61,37 +56,12 @@ class AppSpec(BaseModel):
     def full_image(self) -> str:
         return f"{self.image}:{self.tag}"
 
-    @property
-    def effective_app_label(self) -> str:
-        return self.app_label or self.name
-
-    @property
-    def effective_service_name(self) -> str:
-        return self.service_name or self.name
-
-    @property
-    def effective_container_name(self) -> str:
-        return self.container_name or self.name
-
-    @property
-    def effective_port(self) -> int:
-        p = self.port or 8080
-        return 8080 if p < 1024 else p
-
-    @property
-    def effective_health_path(self) -> str:
-        return (self.health_path or "/").strip() or "/"
-
-
 class ScaleRequest(BaseModel):
-    """Scaling request for an already-deployed application."""
     name: str
     replicas: int = Field(..., ge=1, le=100)
     namespace: str = Field(default=DEFAULT_NS, pattern=DNS1123_LABEL)
 
-
 class StatusItem(BaseModel):
-    """Describes the status of a managed Deployment."""
     name: str
     image: str
     desired: int
@@ -102,17 +72,8 @@ class StatusItem(BaseModel):
     svc_selector: Optional[Dict[str, str]] = None
     preview_ready: Optional[bool] = None
 
-
 class StatusResponse(BaseModel):
-    """List of managed application statuses."""
     items: List[StatusItem]
-
-
-class KPIQuery(BaseModel):
-    """Simplified query for Prometheus KPIs (used later)."""
-    app: Optional[str] = None
-    window: str = Field("1m", description="e.g., 1m or 5m")
-    namespace: Optional[str] = Field(default=None, pattern=DNS1123_LABEL)
 
 
 # --------------------------------------------------------------------
@@ -151,8 +112,6 @@ class User(Base):
 
     tenant = relationship("Tenant", back_populates="users")
 
-    __table_args__ = (Index("ix_users_tenant_id", "tenant_id"),)
-
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
@@ -168,17 +127,24 @@ class ProvisioningRun(Base):
     __tablename__ = "provisioning_runs"
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
-    status = Column(String(50), nullable=False, default="queued")  # queued/running/done/failed
+    status = Column(String(50), nullable=False, default="queued")
     last_error = Column(Text, nullable=True)
     retries = Column(Integer, nullable=True, default=0)
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+# --------------------------------------------------------------------
+# ------------------------- Activity Logs -----------------------------
+# --------------------------------------------------------------------
 
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
 
-    user_id = Column(PGUUID(as_uuid=True), nullable=False)
+    # 🔥 نستخدم email فقط – user_id غير ضروري
+    user_id = Column(String, nullable=True)
+
     user_email = Column(Text, nullable=False)
     tenant_ns = Column(Text, nullable=True)
 
