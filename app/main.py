@@ -22,13 +22,11 @@ from .auth import get_current_context, CurrentContext
 from app.mailer import send_email
 from app.monitor import router as monitor_router
 from app.config import JWT_SECRET, JWT_ALG
-
 from app.k8s_ops import delete_app
 
-#  Activity Logs
+# Activity Logs
 from app.logs.logger import log_event
 from app.logs.routes import router as logs_router
-
 
 
 # -------------------------------------------------------------------
@@ -46,9 +44,6 @@ class User(BaseModel):
 class NameNS(BaseModel):
     name: str
     namespace: str | None = None
-
-
-router = APIRouter(prefix="/api")
 
 
 class ContactPayload(BaseModel):
@@ -69,7 +64,12 @@ app = FastAPI(
 )
 
 
-@router.post("/contact")
+# -----------------------------
+# Contact Router
+# -----------------------------
+contact_router = APIRouter(prefix="/api")
+
+@contact_router.post("/contact")
 def contact_us(payload: ContactPayload):
     admin = os.getenv("ADMIN_EMAIL", "admin@smartdevops.lat")
 
@@ -80,8 +80,7 @@ def contact_us(payload: ContactPayload):
     subject_user = "✅ We've received your message"
     body_user = (
         f"Hi {payload.name},\n\n"
-        "Thanks for contacting Smart DevOps Platform. "
-        "We received your message and will get back to you soon.\n\n"
+        "Thanks for contacting Smart DevOps Platform.\n\n"
         "Best regards,\nSmart DevOps Team"
     )
     send_email(payload.email, subject_user, body_user)
@@ -89,11 +88,22 @@ def contact_us(payload: ContactPayload):
     return {"ok": True}
 
 
-app.include_router(monitor_router, prefix="/api")
+# -----------------------------
+# Main API Router
+# -----------------------------
+api = APIRouter(prefix="/api", tags=["api"])
+
+
+# ----------------------------------------------------
+# Register routers (VERY IMPORTANT ORDER)
+# ----------------------------------------------------
 app.include_router(auth_router, prefix="/api")
-app.include_router(router)
-app.include_router(logs_router)
-api = APIRouter(prefix="/api", tags=["default"])
+app.include_router(onboarding_router, prefix="/api")
+app.include_router(onboarding_admin_router, prefix="/api")
+app.include_router(logs_router, prefix="/api")
+app.include_router(monitor_router, prefix="/api")
+app.include_router(contact_router)
+app.include_router(api)   # MUST BE LAST
 
 
 # -------------------------------------------------------------------
@@ -149,7 +159,6 @@ async def root():
 @api.post("/_debug/validate-appspec")
 async def validate_appspec(spec: AppSpec):
     return {"ok": True, "received": spec.model_dump(), "full_image": spec.full_image}
-
 
 # -------------------------------------------------------------------
 # Helpers
