@@ -286,19 +286,19 @@ async def bluegreen_prepare(
 @api.post("/apps/bluegreen/promote")
 async def bluegreen_promote(
     req: NameNS,
-    user=Depends(get_current_user),
+    ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
     request: Request = None
 ):
     try:
-        ns = user["namespace"]
+        ns = ctx.k8s_namespace
         res = bg_promote(name=req.name, namespace=ns)
 
         log_event(
             db=db,
-            user_id=user["email"],
-            user_email=user["email"],
-            tenant_ns=user["namespace"],
+            user_id=ctx.user_id,
+            user_email=ctx.email,
+            tenant_ns=ctx.k8s_namespace,
             action="bluegreen_promote",
             details={"app_name": req.name},
             ip=request.client.host,
@@ -308,8 +308,7 @@ async def bluegreen_promote(
         return {"ok": True, **res}
 
     except Exception as e:
-        raise HTTPException(500, str(e))
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # -------------------------------------------------------------------
 # Blue/Green Rollback (WITH LOGS)
@@ -317,19 +316,19 @@ async def bluegreen_promote(
 @api.post("/apps/bluegreen/rollback")
 async def bluegreen_rollback(
     req: NameNS,
-    user=Depends(get_current_user),
+    ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
     request: Request = None
 ):
     try:
-        ns = user["namespace"]
+        ns = ctx.k8s_namespace
         res = bg_rollback(name=req.name, namespace=ns)
 
         log_event(
             db=db,
-            user_id=user["email"],
-            user_email=user["email"],
-            tenant_ns=user["namespace"],
+            user_id=ctx.user_id,
+            user_email=ctx.email,
+            tenant_ns=ctx.k8s_namespace,
             action="bluegreen_rollback",
             details={"app_name": req.name},
             ip=request.client.host,
@@ -339,7 +338,7 @@ async def bluegreen_rollback(
         return {"ok": True, **res}
 
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # -------------------------------------------------------------------
@@ -348,19 +347,19 @@ async def bluegreen_rollback(
 @api.post("/apps/delete")
 async def delete_app_api(
     data: NameNS,
+    ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
     request: Request = None
 ):
     try:
-        ns = user["namespace"]
+        ns = ctx.k8s_namespace
         res = delete_app(ns, data.name)
 
         log_event(
             db=db,
-            user_id=user["email"],
-            user_email=user["email"],
-            tenant_ns=user["namespace"],
+            user_id=ctx.user_id,
+            user_email=ctx.email,
+            tenant_ns=ctx.k8s_namespace,
             action="delete_app",
             details={"app_name": data.name},
             ip=request.client.host,
@@ -370,8 +369,7 @@ async def delete_app_api(
         return res
 
     except Exception as e:
-        raise HTTPException(500, str(e))
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # -------------------------------------------------------------------
 # Attach API Router
