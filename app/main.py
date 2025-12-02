@@ -28,7 +28,7 @@ from app.k8s_ops import delete_app
 #  Activity Logs
 from app.logs.logger import log_event
 from app.logs.routes import router as logs_router
-app.include_router(logs_router)
+
 
 
 # -------------------------------------------------------------------
@@ -92,7 +92,7 @@ def contact_us(payload: ContactPayload):
 app.include_router(monitor_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(router)
-
+app.include_router(logs_router)
 api = APIRouter(prefix="/api", tags=["default"])
 
 
