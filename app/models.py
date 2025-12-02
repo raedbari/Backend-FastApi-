@@ -28,11 +28,12 @@ class EnvVar(BaseModel):
     value: str = Field(...)
 
 class AppSpec(BaseModel):
+    """Application contract for deployments/adoption."""
     compat_mode: bool = False
     run_as_non_root: bool = True
     run_as_user: Optional[int] = 1001
 
-    name: str = Field(..., pattern=DNS1123_LABEL)
+    name: str = Field(..., pattern=DNS1123_LABEL, description="K8s resource name")
     app_label: Optional[str] = None
     service_name: Optional[str] = None
     container_name: Optional[str] = None
@@ -55,6 +56,27 @@ class AppSpec(BaseModel):
     @property
     def full_image(self) -> str:
         return f"{self.image}:{self.tag}"
+
+    @property
+    def effective_app_label(self) -> str:
+        return self.app_label or self.name
+
+    @property
+    def effective_service_name(self) -> str:
+        return self.service_name or self.name
+
+    @property
+    def effective_container_name(self) -> str:
+        return self.container_name or self.name
+
+    @property
+    def effective_port(self) -> int:
+        p = self.port or 8080
+        return 8080 if p < 1024 else p
+
+    @property
+    def effective_health_path(self) -> str:
+        return (self.health_path or "/").strip() or "/"
 
 class ScaleRequest(BaseModel):
     name: str
