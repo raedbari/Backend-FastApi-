@@ -10,6 +10,7 @@ from sqlalchemy import (
     UniqueConstraint, CheckConstraint, Text
 )
 from sqlalchemy.orm import relationship
+from sqlalchemy import BigInteger
 
 # ----- K8s naming pattern & defaults -----
 DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
@@ -169,3 +170,20 @@ class ProvisioningRun(Base):
     last_error = Column(Text, nullable=True)
     retries = Column(Integer, nullable=True, default=0)
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+class ActivityLog(Base):
+    __tablename__ = "activity_logs"
+
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+
+    user_id = Column(PGUUID(as_uuid=True), nullable=False)
+    user_email = Column(Text, nullable=False)
+    tenant_ns = Column(Text, nullable=True)
+
+    action = Column(Text, nullable=False)
+    details = Column(JSONB, nullable=True)
+
+    ip = Column(Text, nullable=True)
+    user_agent = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
