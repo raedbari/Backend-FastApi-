@@ -18,6 +18,8 @@ DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
 
 # SQLAlchemy Base comes from app.db to avoid duplicate declarative_base()
 from .db import Base
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB
 
 # --------------------------------------------------------------------
 # --------------------------- Pydantic -------------------------------
@@ -174,7 +176,7 @@ class ProvisioningRun(Base):
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
-    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
 
     user_id = Column(PGUUID(as_uuid=True), nullable=False)
     user_email = Column(Text, nullable=False)
