@@ -375,7 +375,7 @@ async def delete_app_api(
 # Attach API Router
 # -------------------------------------------------------------------
 app.include_router(api)
-
+app.include_router(logs_router)  
 
 # -------------------------------------------------------------------
 # Startup
