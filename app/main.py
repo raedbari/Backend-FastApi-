@@ -146,9 +146,10 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 # -------------------------------------------------------------------
 # Basic routes
 # -------------------------------------------------------------------
-@api.get("/healthz")
+@app.get("/api/healthz")
 async def healthz():
     return {"status": "ok"}
+
 
 
 @api.get("")
