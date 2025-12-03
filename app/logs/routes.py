@@ -1,10 +1,10 @@
 # app/logs/routes.py
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional
 from app.db import get_db
-from app.models import ActivityLog, User
+from app.models import ActivityLog
 from app.auth import get_current_context, CurrentContext
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
@@ -19,7 +19,7 @@ def is_admin(ctx: CurrentContext) -> bool:
 
 
 # -------------------------------------------------------
-# 1) GET /api/logs/tenants 
+# 1) GET /api/logs/my
 # -------------------------------------------------------
 @router.get("/my")
 def my_logs(
@@ -42,6 +42,7 @@ def my_logs(
         "items": [
             {
                 "id": log.id,
+                "user": log.user_email,         # ← ← إضافة مهمة جداً
                 "action": log.action,
                 "details": log.details,
                 "ip": log.ip,
@@ -93,7 +94,7 @@ def all_logs(
         "items": [
             {
                 "id": log.id,
-                "user_email": log.user_email,
+                "user": log.user_email,          # ← نفس التعديل هنا
                 "tenant_ns": log.tenant_ns,
                 "action": log.action,
                 "details": log.details,
