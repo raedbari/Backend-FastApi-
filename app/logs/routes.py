@@ -42,7 +42,7 @@ def my_logs(
         "items": [
             {
                 "id": log.id,
-                "user": log.user_email,         # ← ← إضافة مهمة جداً
+                "user_email": log.user_email,         # ← ← إضافة مهمة جداً
                 "action": log.action,
                 "details": log.details,
                 "ip": log.ip,
@@ -94,7 +94,7 @@ def all_logs(
         "items": [
             {
                 "id": log.id,
-                "user": log.user_email,          # ← نفس التعديل هنا
+                "user_email": log.user_email,          # ← نفس التعديل هنا
                 "tenant_ns": log.tenant_ns,
                 "action": log.action,
                 "details": log.details,
