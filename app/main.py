@@ -191,7 +191,7 @@ async def deploy_app(
 
         log_event(
             db=db,
-            user_id=ctx.user_id,
+            user_id=ctx.email,
             user_email=ctx.email,
             tenant_ns=ctx.k8s_namespace,
             action="deploy_app",
@@ -223,7 +223,7 @@ async def scale_app(
 
         log_event(
             db=db,
-            user_id=ctx.user_id,
+            user_id=ctx.email,
             user_email=ctx.email,
             tenant_ns=ctx.k8s_namespace,
             action="scale_app",
@@ -265,7 +265,7 @@ async def bluegreen_prepare(
 
         log_event(
             db=db,
-            user_id=ctx.user_id,
+            user_id=ctx.email,
             user_email=ctx.email,
             tenant_ns=ctx.k8s_namespace,
             action="bluegreen_prepare",
@@ -296,7 +296,7 @@ async def bluegreen_promote(
 
         log_event(
             db=db,
-            user_id=ctx.user_id,
+            user_id=ctx.email,
             user_email=ctx.email,
             tenant_ns=ctx.k8s_namespace,
             action="bluegreen_promote",
@@ -326,7 +326,7 @@ async def bluegreen_rollback(
 
         log_event(
             db=db,
-            user_id=ctx.user_id,
+            user_id=ctx.email,
             user_email=ctx.email,
             tenant_ns=ctx.k8s_namespace,
             action="bluegreen_rollback",
@@ -357,7 +357,7 @@ async def delete_app_api(
 
         log_event(
             db=db,
-            user_id=ctx.user_id,
+            user_id=ctx.email,
             user_email=ctx.email,
             tenant_ns=ctx.k8s_namespace,
             action="delete_app",
