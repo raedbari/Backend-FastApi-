@@ -10,10 +10,13 @@ Kubernetes operations for our platform:
 NOTE: For patch operations we pass typed Kubernetes objects (V1Deployment / V1Service)
 not raw dicts, so the serializer emits proper camelCase (containerPort, targetPort, …).
 """
-from __future__ import annotations
-from typing import Dict, List
 
-from kubernetes import client
+from __future__ import annotations
+
+from typing import Optional, Dict, Any
+from kubernetes import client, config
+
+
 try:
     from kubernetes.client.exceptions import ApiException  # kubernetes >= 28
 except Exception:
@@ -525,79 +528,141 @@ def bg_rollback(name: str, namespace: str):
         )
 
     return {"ok": True}
+    
 
-from kubernetes import config
-try:
-    # In some versions, ApiException import path differs, so we keep both imports
-    from kubernetes.client.exceptions import ApiException as K8sApiException  # k8s >= 28
-except Exception:  # pragma: no cover
-    from kubernetes.client.rest import ApiException as K8sApiException        # k8s < 28
 
-def _ensure_k8s_config():
+def _ensure_k8s_config() -> None:
     """Load in-cluster config if running inside k8s, otherwise fall back to local kubeconfig."""
     try:
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
 
-def create_tenant_namespace(ns: str) -> dict:
-   
+
+def ensure_tenant_pvc(
+    v1: client.CoreV1Api,
+    ns: str,
+    pvc_name: str = "tenant-storage",
+    size: str = "500Mi",
+    storage_class: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a default PVC for the tenant namespace if it doesn't exist.
+    """
+    try:
+        v1.read_namespaced_persistent_volume_claim(pvc_name, ns)
+        return {"pvc": pvc_name, "created": False}
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+    pvc_spec = client.V1PersistentVolumeClaimSpec(
+        access_modes=["ReadWriteOnce"],
+        resources=client.V1ResourceRequirements(requests={"storage": size}),
+        storage_class_name=storage_class,  # None => use default StorageClass if exists
+    )
+
+    pvc = client.V1PersistentVolumeClaim(
+        metadata=client.V1ObjectMeta(name=pvc_name, namespace=ns),
+        spec=pvc_spec,
+    )
+
+    v1.create_namespaced_persistent_volume_claim(ns, pvc)
+    return {"pvc": pvc_name, "created": True, "size": size, "storageClass": storage_class}
+
+
+def ensure_storage_quota(
+    v1: client.CoreV1Api,
+    ns: str,
+    quota_name: str = "storage-quota",
+    storage_limit: str = "500Mi",
+) -> Dict[str, Any]:
+    try:
+        v1.read_namespaced_resource_quota(quota_name, ns)
+        return {"quota": quota_name, "created": False}
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+    quota = client.V1ResourceQuota(
+        metadata=client.V1ObjectMeta(name=quota_name, namespace=ns),
+        spec=client.V1ResourceQuotaSpec(
+            hard={
+                "requests.storage": storage_limit,
+                "persistentvolumeclaims": "1",
+            }
+        ),
+    )
+
+    v1.create_namespaced_resource_quota(ns, quota)
+    return {"quota": quota_name, "created": True, "limit": storage_limit}
+
+
+def create_tenant_namespace(
+    ns: str,
+    storage_size: str = "500Mi",
+    storage_class: Optional[str] = None,
+) -> dict:
+    """
+    Create tenant namespace + RBAC + default PVC + storage quota.
+    """
+    # تأكد أن config محمّل (خصوصاً إذا get_api_clients لا يحمل config داخلياً)
+    _ensure_k8s_config()
+
     apis = get_api_clients()
-    v1   = apis["core"]     # CoreV1Api
-    rbac = apis["rbac"]     # RbacAuthorizationV1Api
+    v1 = apis["core"]   # CoreV1Api
+    rbac = apis["rbac"] # RbacAuthorizationV1Api
 
-    created = {"namespace": False, "serviceaccount": False, "role": False, "rolebinding": False}
+    created: Dict[str, Any] = {
+        "namespace": False,
+        "serviceaccount": False,
+        "role": False,
+        "rolebinding": False,
+        "pvc": None,
+        "storage_quota": None,
+    }
 
-    # 0) Try to read the Namespace; if 404 then try to create it (may fail with 403 if no cluster-level permission)
+    # 0) Namespace
     try:
         v1.read_namespace(ns)
     except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            try:
-                body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns))
-                v1.create_namespace(body)
-                created["namespace"] = True
-            except ApiException as e2:
-                # No cluster permission? Don’t break execution — continue with RBAC setup assuming namespace exists
-                if getattr(e2, "status", None) != 409:  # 409 = already exists
-                    pass
-        elif getattr(e, "status", None) != 200:
-            pass
+        if e.status == 404:
+            body = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns))
+            v1.create_namespace(body)
+            created["namespace"] = True
+        elif e.status != 409:
+            # 409 = already exists (rare here), anything else should raise
+            raise
 
     # 1) ServiceAccount
     sa_name = "tenant-app-sa"
     try:
         v1.read_namespaced_service_account(sa_name, ns)
     except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            sa = client.V1ServiceAccount(
-                metadata=client.V1ObjectMeta(name=sa_name, namespace=ns)
-            )
+        if e.status == 404:
+            sa = client.V1ServiceAccount(metadata=client.V1ObjectMeta(name=sa_name, namespace=ns))
             v1.create_namespaced_service_account(ns, sa)
             created["serviceaccount"] = True
         else:
             raise
 
-    # 2) Role (permissions limited to this namespace)
+    # 2) Role
     role_name = "tenant-app-role"
     try:
         rbac.read_namespaced_role(role_name, ns)
     except ApiException as e:
-        if getattr(e, "status", None) == 404:
+        if e.status == 404:
             rules = [
-                # Deployments under apps
                 client.V1PolicyRule(
                     api_groups=["apps"],
                     resources=["deployments"],
                     verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
                 ),
-                # Services under core
                 client.V1PolicyRule(
                     api_groups=[""],
                     resources=["services"],
                     verbs=["get", "list", "watch", "create", "update", "patch", "delete"],
                 ),
-                # Ingresses under networking.k8s.io
                 client.V1PolicyRule(
                     api_groups=["networking.k8s.io"],
                     resources=["ingresses"],
@@ -613,19 +678,15 @@ def create_tenant_namespace(ns: str) -> dict:
         else:
             raise
 
-    # 3) RoleBinding (use RbacV1Subject instead of V1Subject)
+    # 3) RoleBinding
     rb_name = "tenant-app-binding"
     try:
         rbac.read_namespaced_role_binding(rb_name, ns)
     except ApiException as e:
-        if getattr(e, "status", None) == 404:
+        if e.status == 404:
             rb = client.V1RoleBinding(
                 metadata=client.V1ObjectMeta(name=rb_name, namespace=ns),
-                subjects=[
-                    client.RbacV1Subject(  # <-- This is the correct type
-                        kind="ServiceAccount", name=sa_name, namespace=ns
-                    )
-                ],
+                subjects=[client.RbacV1Subject(kind="ServiceAccount", name=sa_name, namespace=ns)],
                 role_ref=client.V1RoleRef(
                     api_group="rbac.authorization.k8s.io",
                     kind="Role",
@@ -637,9 +698,22 @@ def create_tenant_namespace(ns: str) -> dict:
         else:
             raise
 
-    return {"ok": True, "namespace": ns, "created": created}
+    # 4) PVC + Storage Quota (هذا كان ناقص عندك)
+    created["pvc"] = ensure_tenant_pvc(
+        v1=v1,
+        ns=ns,
+        pvc_name="tenant-storage",
+        size=storage_size,
+        storage_class=storage_class,
+    )
+    created["storage_quota"] = ensure_storage_quota(
+        v1=v1,
+        ns=ns,
+        quota_name="storage-quota",
+        storage_limit=storage_size,
+    )
 
-from kubernetes import client
+    return {"ok": True, "namespace": ns, "created": created}
 
 def delete_app(namespace: str, name: str):
     apps = client.AppsV1Api()
@@ -697,3 +771,7 @@ def delete_app(namespace: str, name: str):
         pass
 
     return {"ok": True, "deleted": name}
+
+
+
+
