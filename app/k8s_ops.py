@@ -385,6 +385,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
                 conditions=conds,
                 svc_selector=svc_sel,
                 preview_ready=prev_ok,
+                host=get_app_host(ns, d_name),
             )
         )
 
@@ -813,4 +814,14 @@ def delete_app(namespace: str, name: str):
 
 
 
-
+def get_app_host(namespace: str, app_name: str) -> str | None:
+    net = client.NetworkingV1Api()
+    ing_name = f"{app_name}-ingress"
+    try:
+        ing = net.read_namespaced_ingress(name=ing_name, namespace=namespace)
+        rules = ing.spec.rules or []
+        if rules and rules[0].host:
+            return rules[0].host
+    except Exception:
+        return None
+    return None
