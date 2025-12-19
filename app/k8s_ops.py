@@ -38,6 +38,9 @@ def upsert_deployment(spec: AppSpec) -> dict:
     path   = spec.effective_health_path
     labels = platform_labels({"app": name, "role": "active"})
 
+    # ----------------------------
+    # Security context + resources
+    # ----------------------------
     sc = client.V1SecurityContext(allow_privilege_escalation=False)
     if not getattr(spec, "compat_mode", False) and getattr(spec, "run_as_non_root", True):
         sc.run_as_non_root = True
@@ -53,6 +56,31 @@ def upsert_deployment(spec: AppSpec) -> dict:
         limits=res.get("limits",   default_resources["limits"]),
     )
 
+    # ----------------------------
+    # PVC mount (Billing storage)
+    # ----------------------------
+    pvc_name = getattr(spec, "pvc_name", None) or "tenant-storage"
+    mount_path = getattr(spec, "pvc_mount_path", None) or "/data"
+
+    volume_mounts = [
+        client.V1VolumeMount(
+            name="tenant-data",
+            mount_path=mount_path
+        )
+    ]
+
+    volumes = [
+        client.V1Volume(
+            name="tenant-data",
+            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                claim_name=pvc_name
+            )
+        )
+    ]
+
+    # ----------------------------
+    # Container
+    # ----------------------------
     container = client.V1Container(
         name=name,
         image=(f"{spec.image}:{spec.tag}" if getattr(spec, "tag", None) else spec.image),
@@ -60,6 +88,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
         ports=[client.V1ContainerPort(container_port=port, name="http")],
         security_context=sc,
         resources=resources,
+        volume_mounts=volume_mounts,   # ✅ added
         readiness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
             initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
@@ -70,14 +99,23 @@ def upsert_deployment(spec: AppSpec) -> dict:
         ),
     )
 
+    # ----------------------------
+    # Pod template
+    # ----------------------------
     pod_template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels=labels),
-        spec=client.V1PodSpec(containers=[container]),
+        spec=client.V1PodSpec(
+            containers=[container],
+            volumes=volumes,  # ✅ added
+        ),
     )
 
+    # ----------------------------
+    # Deployment
+    # ----------------------------
     dep_spec = client.V1DeploymentSpec(
         replicas=spec.replicas or 1,
-        selector=client.V1LabelSelector(match_labels={"app": name}), 
+        selector=client.V1LabelSelector(match_labels={"app": name}),
         template=pod_template,
         strategy=client.V1DeploymentStrategy(
             type="RollingUpdate",
@@ -100,6 +138,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
             resp = apps.create_namespaced_deployment(namespace=ns, body=body)
         else:
             raise
+
     return resp.to_dict()
 
 # ============================================================
