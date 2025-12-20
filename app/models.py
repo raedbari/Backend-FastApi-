@@ -93,7 +93,8 @@ class StatusItem(BaseModel):
     conditions: Dict[str, str] = Field(default_factory=dict)
     svc_selector: Optional[Dict[str, str]] = None
     preview_ready: Optional[bool] = None
-
+    host: Optional[str] = None
+    
 class StatusResponse(BaseModel):
     items: List[StatusItem]
 

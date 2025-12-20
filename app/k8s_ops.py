@@ -385,7 +385,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
                 conditions=conds,
                 svc_selector=svc_sel,
                 preview_ready=prev_ok,
-                host: Optional[str] = None
+                host=get_app_host(ns, d_name),
             )
         )
 
@@ -482,7 +482,7 @@ def bg_prepare(spec: AppSpec):
 
     dep_spec = client.V1DeploymentSpec(
         replicas=1,
-        selector=client.V1LabelSelector(match_labels={"app": app_label}),  # ثابت ومهم
+        selector=client.V1LabelSelector(match_labels={"app": app_label}),  
         template=pod_template
     )
 
@@ -646,7 +646,7 @@ def create_tenant_namespace(
     """
     Create tenant namespace + RBAC + default PVC + storage quota.
     """
-    # تأكد أن config محمّل (خصوصاً إذا get_api_clients لا يحمل config داخلياً)
+
     _ensure_k8s_config()
 
     apis = get_api_clients()
