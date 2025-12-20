@@ -385,7 +385,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
                 conditions=conds,
                 svc_selector=svc_sel,
                 preview_ready=prev_ok,
-                host=get_app_host(ns, d_name),
+                host: Optional[str] = None
             )
         )
 
