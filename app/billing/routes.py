@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from .metrics import OPEN_APP_TOTAL
+from app.metrics import OPEN_APP_TOTAL
+
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 
