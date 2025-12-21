@@ -94,7 +94,7 @@ def all_logs(
         "items": [
             {
                 "id": log.id,
-                "user_email": log.user_email,          # ← نفس التعديل هنا
+                "user_email": log.user_email,          
                 "tenant_ns": log.tenant_ns,
                 "action": log.action,
                 "details": log.details,
@@ -105,3 +105,5 @@ def all_logs(
             for log in items
         ]
     }
+
+
