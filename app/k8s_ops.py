@@ -30,13 +30,31 @@ from .models import AppSpec, StatusItem, StatusResponse
 # ============================================================
 
 def upsert_deployment(spec: AppSpec) -> dict:
-    ns   = spec.namespace or get_namespace()
-    apps = get_api_clients()["apps"]
+    ns = spec.namespace or get_namespace()
+    apis = get_api_clients()
+    apps = apis["apps"]
+    v1   = apis["core"]  # ✅ CoreV1Api
 
     name   = spec.effective_app_label
     port   = spec.effective_port
     path   = spec.effective_health_path
     labels = platform_labels({"app": name, "role": "active"})
+
+    # ----------------------------
+    # ✅ Ensure PVC exists FIRST
+    # ----------------------------
+    pvc_name   = getattr(spec, "pvc_name", None) or "tenant-storage"
+    pvc_size   = getattr(spec, "pvc_size", None) or "500Mi"
+    # اتركها None ليستخدم default StorageClass (عندك local-path default)
+    storage_class = getattr(spec, "storage_class", None)
+
+    ensure_tenant_pvc(
+        v1=v1,
+        ns=ns,
+        pvc_name=pvc_name,
+        size=pvc_size,
+        storage_class=storage_class,
+    )
 
     # ----------------------------
     # Security context + resources
@@ -57,16 +75,12 @@ def upsert_deployment(spec: AppSpec) -> dict:
     )
 
     # ----------------------------
-    # PVC mount (Billing storage)
+    # PVC mount
     # ----------------------------
-    pvc_name = getattr(spec, "pvc_name", None) or "tenant-storage"
     mount_path = getattr(spec, "pvc_mount_path", None) or "/data"
 
     volume_mounts = [
-        client.V1VolumeMount(
-            name="tenant-data",
-            mount_path=mount_path
-        )
+        client.V1VolumeMount(name="tenant-data", mount_path=mount_path)
     ]
 
     volumes = [
@@ -74,7 +88,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
             name="tenant-data",
             persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
                 claim_name=pvc_name
-            )
+            ),
         )
     ]
 
@@ -88,7 +102,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
         ports=[client.V1ContainerPort(container_port=port, name="http")],
         security_context=sc,
         resources=resources,
-        volume_mounts=volume_mounts,   # ✅ added
+        volume_mounts=volume_mounts,
         readiness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
             initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
@@ -99,20 +113,11 @@ def upsert_deployment(spec: AppSpec) -> dict:
         ),
     )
 
-    # ----------------------------
-    # Pod template
-    # ----------------------------
     pod_template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels=labels),
-        spec=client.V1PodSpec(
-            containers=[container],
-            volumes=volumes,  # ✅ added
-        ),
+        spec=client.V1PodSpec(containers=[container], volumes=volumes),
     )
 
-    # ----------------------------
-    # Deployment
-    # ----------------------------
     dep_spec = client.V1DeploymentSpec(
         replicas=spec.replicas or 1,
         selector=client.V1LabelSelector(match_labels={"app": name}),
@@ -140,6 +145,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
             raise
 
     return resp.to_dict()
+
 
 # ============================================================
 # 🌐 Automatically create Ingress (supports TLS + port discovery + privacy protection)
