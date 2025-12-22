@@ -16,3 +16,4 @@ PyJWT==2.9.0
 python-jose[cryptography]
 email-validator
 psycopg2-binary==2.9.9
+prometheus-client==0.20.0
