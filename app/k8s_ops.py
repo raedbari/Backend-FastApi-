@@ -157,36 +157,43 @@ from .k8s_client import get_api_clients
 from .auth import get_current_context
 
 
-def create_ingress_for_app(app_name: str, namespace: str , ctx=None):
-    
+def create_ingress_for_app(
+    app_name: str,
+    namespace: str,
+    ctx=None,
+    *,
+    host: str | None = None,
+    ingress_name: str | None = None,
+    tls_secret: str | None = None,
+    service_name: str | None = None,
+):
     clients = get_api_clients()
     net_api = clients["networking"]
     core_api = clients["core"]
 
     if ctx is None:
-       ctx = get_current_context()
+        ctx = get_current_context()
     role = getattr(ctx, "role", "")
 
-    # 🚫 Prevent platform_admin from creating any resource inside customer namespaces
     if role == "platform_admin" and namespace != "default":
         print(f"🚫 platform_admin is not allowed to create Ingress inside customer namespaces ({namespace})")
         return
-
-    #  Prevent any other user from deploying inside default namespace
     if role != "platform_admin" and namespace == "default":
         print(f"🚫 User '{role}' is not allowed to deploy inside 'default' namespace")
         return
 
-    host = f"{app_name}.{namespace}.apps.smartdevops.lat"
-    ingress_name = f"{app_name}-ingress"
-    tls_secret = f"{app_name}-tls"
+    # ✅ defaults (كما كان عندك)
+    service_name = service_name or app_name
+    ingress_name = ingress_name or f"{app_name}-ingress"
+    tls_secret   = tls_secret   or f"{app_name}-tls"
+    host         = host         or f"{app_name}.{namespace}.apps.smartdevops.lat"
 
-    #  Detect port from Service
+    # Detect port from Service
     try:
-        svc = core_api.read_namespaced_service(app_name, namespace)
+        svc = core_api.read_namespaced_service(service_name, namespace)
         port_number = svc.spec.ports[0].port if svc.spec.ports else 8080
     except ApiException:
-        print(f"⚠️ Service {app_name} not found in {namespace}, using default port 8080.")
+        print(f"⚠️ Service {service_name} not found in {namespace}, using default port 8080.")
         port_number = 8080
 
     ingress_manifest = client.V1Ingress(
@@ -211,7 +218,7 @@ def create_ingress_for_app(app_name: str, namespace: str , ctx=None):
                                 path_type="Prefix",
                                 backend=client.V1IngressBackend(
                                     service=client.V1IngressServiceBackend(
-                                        name=app_name,
+                                        name=service_name,
                                         port=client.V1ServiceBackendPort(number=port_number),
                                     )
                                 ),
@@ -224,21 +231,164 @@ def create_ingress_for_app(app_name: str, namespace: str , ctx=None):
     )
 
     try:
-        existing = net_api.read_namespaced_ingress(ingress_name, namespace)
+        net_api.read_namespaced_ingress(ingress_name, namespace)
         net_api.delete_namespaced_ingress(ingress_name, namespace)
         print(f"♻️ Old Ingress {ingress_name} deleted in {namespace} — it will be recreated.")
     except ApiException as e:
         if getattr(e, "status", None) != 404:
             print(f"⚠️ Failed to check existing Ingress: {e}")
 
-    try:
-        net_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
-        print(f"✅ Ingress {ingress_name} created successfully in {namespace}")
-        print(f"🌍 URL: https://{host}")
-    except ApiException as e:
-        print(f"❌ Failed to create Ingress: {e}")
-        raise
+    net_api.create_namespaced_ingress(namespace=namespace, body=ingress_manifest)
+    print(f"✅ Ingress {ingress_name} created successfully in {namespace}")
+    print(f"🌍 URL: https://{host}")
 
+
+def upsert_service_preview(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
+    current_ctx = ctx or get_current_context()
+    role = getattr(current_ctx, "role", "")
+    ns = getattr(current_ctx, "k8s_namespace", None) or getattr(spec, "namespace", None) or "default"
+
+    # نفس حماياتك
+    if role == "platform_admin" and ns != "default":
+        raise PermissionError(f"🚫 platform_admin is not allowed to deploy inside customer namespaces ({ns}).")
+    if role != "platform_admin" and ns == "default":
+        raise PermissionError(f"🚫 User '{role}' is not allowed to deploy inside namespace 'default'.")
+
+    core = get_api_clients()["core"]
+
+    app_label = spec.effective_app_label
+    svc_name = f"{app_label}-preview"
+    port = spec.effective_port
+
+    labels = platform_labels({"app": app_label, "role": "preview"})
+    selector = {"app": app_label, "role": "preview"}
+
+    try:
+        existing = core.read_namespaced_service(name=svc_name, namespace=ns)
+        svc_type = existing.spec.type or "ClusterIP"
+        cluster_port = existing.spec.ports[0].port if existing.spec.ports else port
+
+        patch_body = client.V1Service(
+            api_version="v1",
+            metadata=client.V1ObjectMeta(labels=labels),
+            spec=client.V1ServiceSpec(
+                selector=selector,
+                type=svc_type,
+                ports=[client.V1ServicePort(name="http", port=cluster_port, target_port=port, protocol="TCP")],
+            ),
+        )
+        resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            create_body = client.V1Service(
+                api_version="v1",
+                kind="Service",
+                metadata=client.V1ObjectMeta(name=svc_name, namespace=ns, labels=labels),
+                spec=client.V1ServiceSpec(
+                    type="ClusterIP",
+                    selector=selector,
+                    ports=[client.V1ServicePort(name="http", port=port, target_port=port, protocol="TCP")],
+                ),
+            )
+            resp = core.create_namespaced_service(namespace=ns, body=create_body)
+        else:
+            raise
+
+    # ✅ ingress preview مستقل
+    host = f"preview-{app_label}.{ns}.apps.smartdevops.lat"
+    create_ingress_for_app(
+        app_name=app_label,
+        namespace=ns,
+        ctx=current_ctx,
+        host=host,
+        ingress_name=f"{app_label}-preview-ingress",
+        tls_secret=f"{app_label}-preview-tls",
+        service_name=svc_name,
+    )
+
+    return resp.to_dict()
+
+
+
+def upsert_preview_deployment(spec: AppSpec) -> dict:
+    ns = spec.namespace or get_namespace()
+    apis = get_api_clients()
+    apps = apis["apps"]
+    v1   = apis["core"]
+
+    app_label = spec.effective_app_label
+    dep_name  = f"{app_label}-preview"
+    port      = spec.effective_port
+    path      = spec.effective_health_path
+
+    labels = platform_labels({"app": app_label, "role": "preview"})
+
+    # PVC مثل deploy
+    pvc_name = getattr(spec, "pvc_name", None) or "tenant-storage"
+    pvc_size = getattr(spec, "pvc_size", None) or "500Mi"
+    storage_class = getattr(spec, "storage_class", None)
+
+    ensure_tenant_pvc(v1=v1, ns=ns, pvc_name=pvc_name, size=pvc_size, storage_class=storage_class)
+
+    mount_path = getattr(spec, "pvc_mount_path", None) or "/data"
+    volume_mounts = [client.V1VolumeMount(name="tenant-data", mount_path=mount_path)]
+    volumes = [client.V1Volume(
+        name="tenant-data",
+        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=pvc_name),
+    )]
+
+    container = client.V1Container(
+        name=dep_name,
+        image=f"{spec.image}:{spec.tag}",
+        image_pull_policy="Always",
+        ports=[client.V1ContainerPort(container_port=port, name="http")],
+        volume_mounts=volume_mounts,
+        readiness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
+        ),
+        liveness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path=path, port=port),
+            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3,
+        ),
+    )
+
+    pod_template = client.V1PodTemplateSpec(
+        metadata=client.V1ObjectMeta(labels=labels),
+        spec=client.V1PodSpec(containers=[container], volumes=volumes),
+    )
+
+    dep_spec = client.V1DeploymentSpec(
+        replicas=1,
+        # ✅ selector فريد للـ preview
+        selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
+        template=pod_template,
+    )
+
+    body = client.V1Deployment(
+        api_version="apps/v1",
+        kind="Deployment",
+        metadata=client.V1ObjectMeta(name=dep_name, namespace=ns, labels=labels),
+        spec=dep_spec,
+    )
+
+    try:
+        apps.read_namespaced_deployment(name=dep_name, namespace=ns)
+        resp = apps.patch_namespaced_deployment(name=dep_name, namespace=ns, body=body)
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            resp = apps.create_namespaced_deployment(namespace=ns, body=body)
+        else:
+            raise
+
+    return resp.to_dict()
+
+
+def bg_prepare_full(spec: AppSpec, ctx=None) -> dict:
+    # spec.namespace تم ضبطه من endpoint باستخدام ctx.k8s_namespace
+    preview_dep = upsert_preview_deployment(spec)
+    preview_svc = upsert_service_preview(spec, ctx)
+    return {"preview_deployment": preview_dep, "preview_service": preview_svc}
 
 
 # ============================================================

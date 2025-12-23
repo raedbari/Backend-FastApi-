@@ -264,7 +264,11 @@ async def bluegreen_prepare(
     request: Request = None
 ):
     try:
-        res = bg_prepare(spec)
+        spec.namespace = ctx.k8s_namespace
+
+        verify_namespace_access(ctx, spec.namespace)
+
+        res = bg_prepare_full(spec, ctx)
 
         log_event(
             db=db,
@@ -281,7 +285,6 @@ async def bluegreen_prepare(
 
     except Exception as e:
         raise HTTPException(500, str(e))
-
 
 # -------------------------------------------------------------------
 # Blue/Green Promote (WITH LOGS)
