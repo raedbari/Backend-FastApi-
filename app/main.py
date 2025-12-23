@@ -35,6 +35,7 @@ from app.config import JWT_SECRET, JWT_ALG
 
 # Activity Logs
 from app.logs.logger import log_event
+from .k8s_ops import bg_prepare_full
 
 
 # -------------------------------------------------------------------

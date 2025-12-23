@@ -360,7 +360,6 @@ def upsert_preview_deployment(spec: AppSpec) -> dict:
 
     dep_spec = client.V1DeploymentSpec(
         replicas=1,
-        # ✅ selector فريد للـ preview
         selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
         template=pod_template,
     )
