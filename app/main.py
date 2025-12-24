@@ -287,32 +287,48 @@ async def bluegreen_prepare(
 # -------------------------------------------------------------------
 # Blue/Green Promote (WITH LOGS)
 # -------------------------------------------------------------------
-@api.post("/apps/bluegreen/promote")
-async def bluegreen_promote(
-    req: NameNS,
-    ctx: CurrentContext = Depends(get_current_context),
-    db: Session = Depends(get_db),
-    request: Request = None
-):
-    try:
-        ns = ctx.k8s_namespace
-        res = bg_promote(name=req.name, namespace=ns)
 
-        log_event(
-            db=db,
-            user_id=ctx.email,
-            user_email=ctx.email,
-            tenant_ns=ctx.k8s_namespace,
-            action="bluegreen_promote",
-            details={"app_name": req.name},
-            ip=request.client.host,
-            user_agent=request.headers.get("user-agent", "")
-        )
+def bg_promote(name: str, namespace: str) -> dict:
+    apps = get_api_clients()["apps"]
 
-        return {"ok": True, **res}
+    preview_dep_name = f"{name}-preview"
+    prod_dep_name = name
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # 1) اقرأ preview deployment وخذ image
+    prev = apps.read_namespaced_deployment(name=preview_dep_name, namespace=namespace)
+    if not prev.spec.template.spec.containers:
+        raise RuntimeError(f"No containers found in {preview_dep_name}")
+
+    preview_image = prev.spec.template.spec.containers[0].image
+
+    # 2) اقرأ production deployment (لازم يكون موجود مسبقاً)
+    prod = apps.read_namespaced_deployment(name=prod_dep_name, namespace=namespace)
+    if not prod.spec.template.spec.containers:
+        raise RuntimeError(f"No containers found in {prod_dep_name}")
+
+    # اسم الكونتينر في prod (حتى نعمل patch صحيح)
+    prod_container_name = prod.spec.template.spec.containers[0].name
+
+    # 3) Patch image فقط (بدون labels/selector)
+    patch_body = {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {"name": prod_container_name, "image": preview_image}
+                    ]
+                }
+            }
+        }
+    }
+
+    apps.patch_namespaced_deployment(
+        name=prod_dep_name,
+        namespace=namespace,
+        body=patch_body
+    )
+
+    return {"promoted": True, "prod_deployment": prod_dep_name, "image": preview_image}
 
 # -------------------------------------------------------------------
 # Blue/Green Rollback (WITH LOGS)
