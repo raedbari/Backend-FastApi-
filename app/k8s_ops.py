@@ -383,11 +383,25 @@ def upsert_preview_deployment(spec: AppSpec) -> dict:
     return resp.to_dict()
 
 
+# def bg_prepare_full(spec: AppSpec, ctx=None) -> dict:
+#     preview_dep = upsert_preview_deployment(spec)
+#     preview_svc = upsert_service_preview(spec, ctx)
+#     return {"preview_deployment": preview_dep, "preview_service": preview_svc}
+
 def bg_prepare_full(spec: AppSpec, ctx=None) -> dict:
-    # spec.namespace تم ضبطه من endpoint باستخدام ctx.k8s_namespace
     preview_dep = upsert_preview_deployment(spec)
     preview_svc = upsert_service_preview(spec, ctx)
-    return {"preview_deployment": preview_dep, "preview_service": preview_svc}
+
+    ns = spec.namespace or (getattr(ctx, "k8s_namespace", None) if ctx else None) or "default"
+    app_label = spec.effective_app_label
+    preview_host = f"preview-{app_label}.{ns}.apps.smartdevops.lat"
+
+    return {
+        "preview_deployment": preview_dep,
+        "preview_service": preview_svc,
+        "preview_host": preview_host,
+        "preview_url": f"https://{preview_host}",
+    }
 
 
 # ============================================================

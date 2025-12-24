@@ -21,8 +21,6 @@ from app.logs.routes import router as logs_router
 from app.alerts.webhook import router as alerts_router
 from app.billing.routes import router as billing_router
 
-
-
 # Models / Ops
 from app.models import AppSpec, ScaleRequest, StatusResponse
 from app.k8s_ops import (
@@ -36,7 +34,6 @@ from app.config import JWT_SECRET, JWT_ALG
 # Activity Logs
 from app.logs.logger import log_event
 from .k8s_ops import bg_prepare_full
-
 
 # -------------------------------------------------------------------
 # FastAPI App
