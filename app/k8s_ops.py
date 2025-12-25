@@ -400,7 +400,7 @@ def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
     port = spec.effective_port
 
     labels = platform_labels({"app": app_label, "role": "active"})
-   selector = {"app": app_label, "slot": "blue"}  
+    selector = {"app": app_label, "slot": "blue"}  
 
 
     try:
@@ -714,6 +714,7 @@ def bg_prepare(spec: AppSpec):
     return {"ok": True, "preview": resp.to_dict()}
 
 
+from kubernetes.client.rest import ApiException
 
 def bg_promote(name: str, namespace: str):
     ns = namespace or get_namespace()
