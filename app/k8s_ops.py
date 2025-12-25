@@ -764,40 +764,49 @@ def bg_promote(name: str, namespace: str) -> dict:
         pass
 
     return {"promoted": True, "prod_deployment": prod_dep_name, "image": preview_image}
-
 def bg_rollback(name: str, namespace: str):
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
     deps = _find_deployments_by_app(apps, ns, name)
+
     active = None
     idle = None
+    preview = None
 
     for d in deps:
-        role = d.metadata.labels.get("role", "")
+        role = (d.metadata.labels or {}).get("role", "")
         if role == "active":
             active = d
         elif role == "idle":
             idle = d
+        elif role == "preview":
+            preview = d
 
-    if not idle:
-        return {"note": "No idle version to rollback to"}
+    # ✅ 1) preferred rollback target: idle
+    target = idle
 
-    # 1) idle → active (turn on)
-    _patch_deploy_labels(apps, ns, idle.metadata.name, "active")
+    # ✅ 2) fallback rollback target: preview (إذا ما عندك idle)
+    if not target and preview:
+        target = preview
+
+    if not target:
+        return {"note": "No idle/preview version to rollback to"}
+
+    # 1) target -> active (turn on)
+    _patch_deploy_labels(apps, ns, target.metadata.name, "active")
     apps.patch_namespaced_deployment_scale(
-        idle.metadata.name, ns, {"spec": {"replicas": 1}}
+        target.metadata.name, ns, {"spec": {"replicas": 1}}
     )
 
-    # 2) active → idle (turn off)
-    if active:
+    # 2) current active -> idle (turn off)
+    if active and active.metadata.name != target.metadata.name:
         _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
         apps.patch_namespaced_deployment_scale(
             active.metadata.name, ns, {"spec": {"replicas": 0}}
         )
 
-    return {"ok": True}
-    
+    return {"ok": True, "rolled_back_to": target.metadata.name}
 
 
 def _ensure_k8s_config() -> None:
