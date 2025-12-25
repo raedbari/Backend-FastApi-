@@ -84,7 +84,7 @@ class ScaleRequest(BaseModel):
     namespace: str = Field(default=DEFAULT_NS, pattern=DNS1123_LABEL)
 
 class StatusItem(BaseModel):
-    name: str
+    name: str  # k8s name الحقيقي (مثل x1 أو x1-preview)
     image: str
     desired: int
     current: int
@@ -94,6 +94,13 @@ class StatusItem(BaseModel):
     svc_selector: Optional[Dict[str, str]] = None
     preview_ready: Optional[bool] = None
     host: Optional[str] = None
+
+    # ✅ حقول جديدة للعرض/التمييز
+    display_name: Optional[str] = None   # يظهر للمستخدم (بدون -preview)
+    variant: Optional[str] = None        # "active" | "preview"
+    base_name: Optional[str] = None      # الاسم الأساسي (x1)
+    open_url: Optional[str] = None       # رابط فتح صحيح حسب النوع
+
     
 class StatusResponse(BaseModel):
     items: List[StatusItem]

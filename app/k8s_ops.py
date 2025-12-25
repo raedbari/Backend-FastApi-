@@ -531,7 +531,6 @@ def upsert_service_preview(spec: "AppSpec", ctx: "CurrentContext" = None) -> dic
     return resp.to_dict()
 
 # ---- Status / Scale / Blue-Green (Part 2/3) ----
-
 def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> StatusResponse:
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
@@ -542,7 +541,6 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
             d = apps.read_namespaced_deployment(name=name, namespace=ns)
             deployments = [d]
         except ApiException:
-            # Don't break the API: return an empty list
             return StatusResponse(items=[])
     else:
         deployments = apps.list_namespaced_deployment(
@@ -568,10 +566,18 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
         # Conditions
         conds = {c.type: c.status for c in (status.conditions or [])}
 
-        # App name/label
-        d_name = d.metadata.name
+        # Deployment name
+        d_name = (d.metadata.name or "").strip()
+
+        # ✅ تحديد هل هذا preview؟
+        is_preview = d_name.endswith("-preview")
+        base_name = d_name[:-8] if is_preview else d_name   # remove "-preview"
+        variant = "preview" if is_preview else "active"
+        display_name = base_name
+
+        # App label (للاحتفاظ بسلوكك القديم)
         d_labels = d.metadata.labels or {}
-        app_label = d_labels.get("app", d_name)
+        app_label = d_labels.get("app", base_name)
 
         # Service selector (optional)
         try:
@@ -579,15 +585,23 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
         except Exception:
             svc_sel = {}
 
-        # Preview status (optional)
+        # Preview status (optional) — الأفضل يكون على base_name
         try:
-            prev_ok = get_preview_ready(app_label, ns)
+            prev_ok = get_preview_ready(base_name, ns)
         except Exception:
             prev_ok = False
 
+        # Host + Open URL
+        if is_preview:
+            host = f"preview-{base_name}.{ns}.apps.smartdevops.lat"
+            open_url = f"https://{host}"
+        else:
+            host = get_app_host(ns, base_name) or f"{base_name}.{ns}.apps.smartdevops.lat"
+            open_url = f"https://{host}"
+
         items.append(
             StatusItem(
-                name=d_name,
+                name=d_name,                 # اسم k8s الحقيقي (x1 أو x1-preview)
                 image=image,
                 desired=spec.replicas or 0,
                 current=status.replicas or 0,
@@ -596,7 +610,13 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
                 conditions=conds,
                 svc_selector=svc_sel,
                 preview_ready=prev_ok,
-                host=get_app_host(ns, d_name),
+                host=host,
+
+                # ✅ حقول العرض الجديدة
+                display_name=display_name,   # يظهر للمستخدم بدون -preview
+                variant=variant,             # active/preview
+                base_name=base_name,         # x1
+                open_url=open_url,           # رابط فتح صحيح
             )
         )
 
