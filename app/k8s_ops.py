@@ -400,7 +400,7 @@ def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
     port = spec.effective_port
 
     labels = platform_labels({"app": app_label, "role": "active"})
-    selector = {"app": app_label, "slot": "blue"}  
+    selector = {"app": app_label, "role": "active"} 
 
 
     try:
@@ -713,48 +713,37 @@ def bg_prepare(spec: AppSpec):
 
     return {"ok": True, "preview": resp.to_dict()}
 
-
-from kubernetes.client.rest import ApiException
-
 def bg_promote(name: str, namespace: str):
     ns = namespace or get_namespace()
     apis = get_api_clients()
     apps = apis["apps"]
     core = apis["core"]
 
-    svc_name = name  # service name = x
-    svc = core.read_namespaced_service(svc_name, ns)
-    sel = svc.spec.selector or {}
+    # تأكد أن preview موجود وجاهز
+    preview_dep = f"{name}-preview"
+    apps.read_namespaced_deployment(preview_dep, ns)
 
-    current_slot = sel.get("slot", "blue")  # الافتراضي blue
-    new_slot = "green" if current_slot == "blue" else "blue"
-
-    # تأكد إن deployment الهدف موجود
-    target_dep = f"{name}-{new_slot}"
-    apps.read_namespaced_deployment(target_dep, ns)
-
-    # 1) بدّل الترافيك: patch service selector
+    # بدّل الترافيك إلى preview
     core.patch_namespaced_service(
-        name=svc_name,
+        name=name,
         namespace=ns,
-        body={"spec": {"selector": {"app": name, "slot": new_slot}}}
+        body={"spec": {"selector": {"app": name, "role": "preview"}}},
     )
 
-    # 2) شغّل الجديد
-    apps.patch_namespaced_deployment_scale(
-        target_dep, ns, {"spec": {"replicas": 1}}
-    )
-
-    # 3) طفّي القديم (يبقى موجود idle)
-    old_dep = f"{name}-{current_slot}"
+    # (اختياري) تأكد preview شغّال
     try:
-        apps.patch_namespaced_deployment_scale(
-            old_dep, ns, {"spec": {"replicas": 0}}
-        )
+        apps.patch_namespaced_deployment_scale(preview_dep, ns, {"spec": {"replicas": 1}})
     except ApiException:
         pass
 
-    return {"ok": True, "active_slot": new_slot}
+    # (اختياري) خلّي active موجود لكن idle (0 replicas) — أو اتركه شغال حسب رغبتك
+    try:
+        apps.patch_namespaced_deployment_scale(name, ns, {"spec": {"replicas": 0}})
+    except ApiException:
+        pass
+
+    return {"ok": True, "active_role": "preview"}
+
 
 def bg_rollback(name: str, namespace: str):
     ns = namespace or get_namespace()
@@ -762,37 +751,29 @@ def bg_rollback(name: str, namespace: str):
     apps = apis["apps"]
     core = apis["core"]
 
-    svc = core.read_namespaced_service(name, ns)
-    sel = svc.spec.selector or {}
-    current_slot = sel.get("slot", "blue")
+    # تأكد أن الـ active deployment موجود
+    apps.read_namespaced_deployment(name, ns)
 
-    rollback_slot = "blue" if current_slot == "green" else "green"
-
-    rollback_dep = f"{name}-{rollback_slot}"
-    apps.read_namespaced_deployment(rollback_dep, ns)
-
-    # رجّع الترافيك
+    # رجّع الترافيك إلى active
     core.patch_namespaced_service(
         name=name,
         namespace=ns,
-        body={"spec": {"selector": {"app": name, "slot": rollback_slot}}}
+        body={"spec": {"selector": {"app": name, "role": "active"}}},
     )
 
-    # شغّل القديم
-    apps.patch_namespaced_deployment_scale(
-        rollback_dep, ns, {"spec": {"replicas": 1}}
-    )
-
-    # طفّي الحالي
-    current_dep = f"{name}-{current_slot}"
+    # (اختياري) شغّل active
     try:
-        apps.patch_namespaced_deployment_scale(
-            current_dep, ns, {"spec": {"replicas": 0}}
-        )
+        apps.patch_namespaced_deployment_scale(name, ns, {"spec": {"replicas": 1}})
     except ApiException:
         pass
 
-    return {"ok": True, "active_slot": rollback_slot}
+    # (اختياري) طفّي preview (يبقى موجود)
+    try:
+        apps.patch_namespaced_deployment_scale(f"{name}-preview", ns, {"spec": {"replicas": 0}})
+    except ApiException:
+        pass
+
+    return {"ok": True, "active_role": "active"}
 
 
 
