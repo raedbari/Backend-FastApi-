@@ -243,8 +243,7 @@ def create_ingress_for_app(
     print(f"🌍 URL: https://{host}")
 
 
-
-def upsert_preview_deployment(spec: AppSpec) -> dict:
+def upsert_preview_deployment(spec: "AppSpec") -> dict:
     ns = spec.namespace or get_namespace()
     apis = get_api_clients()
     apps = apis["apps"]
@@ -255,27 +254,21 @@ def upsert_preview_deployment(spec: AppSpec) -> dict:
     port      = spec.effective_port
     path      = spec.effective_health_path
 
-    # ✅ اجعل match_labels ثابتة (هي مصدر الحقيقة)
     match_labels = {"app": app_label, "role": "preview"}
-
-    # ✅ Labels إضافية (اختياري) للـ metadata فقط
-    meta_labels = platform_labels(match_labels.copy())
+    labels = platform_labels(match_labels)
 
     # PVC مثل deploy
     pvc_name = getattr(spec, "pvc_name", None) or "tenant-storage"
     pvc_size = getattr(spec, "pvc_size", None) or "500Mi"
     storage_class = getattr(spec, "storage_class", None)
-
     ensure_tenant_pvc(v1=v1, ns=ns, pvc_name=pvc_name, size=pvc_size, storage_class=storage_class)
 
     mount_path = getattr(spec, "pvc_mount_path", None) or "/data"
     volume_mounts = [client.V1VolumeMount(name="tenant-data", mount_path=mount_path)]
-    volumes = [
-        client.V1Volume(
-            name="tenant-data",
-            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=pvc_name),
-        )
-    ]
+    volumes = [client.V1Volume(
+        name="tenant-data",
+        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=pvc_name),
+    )]
 
     container = client.V1Container(
         name=dep_name,
@@ -285,45 +278,76 @@ def upsert_preview_deployment(spec: AppSpec) -> dict:
         volume_mounts=volume_mounts,
         readiness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=5,
-            period_seconds=5,
-            timeout_seconds=2,
-            failure_threshold=3,
+            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
         ),
         liveness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=10,
-            period_seconds=10,
-            timeout_seconds=2,
-            failure_threshold=3,
+            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3,
         ),
     )
 
-    # ✅ الأهم: template labels لازم تطابق selector 100%
     pod_template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels=match_labels),
+        metadata=client.V1ObjectMeta(labels=labels),
         spec=client.V1PodSpec(containers=[container], volumes=volumes),
     )
 
-    dep_spec = client.V1DeploymentSpec(
-        replicas=1,
-        selector=client.V1LabelSelector(match_labels=match_labels),
-        template=pod_template,
-    )
-
-    body = client.V1Deployment(
+    # ⚠️ selector في Kubernetes immutable، فلا نحاول نعدله في patch إذا كان موجود
+    create_body = client.V1Deployment(
         api_version="apps/v1",
         kind="Deployment",
-        metadata=client.V1ObjectMeta(name=dep_name, namespace=ns, labels=meta_labels),
-        spec=dep_spec,
+        metadata=client.V1ObjectMeta(name=dep_name, namespace=ns, labels=labels),
+        spec=client.V1DeploymentSpec(
+            replicas=1,
+            selector=client.V1LabelSelector(match_labels=match_labels),
+            template=pod_template,
+        ),
     )
 
     try:
+        # موجود؟ اعمل patch فقط للـ template/spec اللي نحتاجه
         apps.read_namespaced_deployment(name=dep_name, namespace=ns)
-        resp = apps.patch_namespaced_deployment(name=dep_name, namespace=ns, body=body)
+
+        patch_body = {
+            "metadata": {"labels": labels},
+            "spec": {
+                "replicas": 1,
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "containers": [{
+                            "name": dep_name,
+                            "image": f"{spec.image}:{spec.tag}",
+                            "imagePullPolicy": "Always",
+                            "ports": [{"containerPort": port, "name": "http"}],
+                            "readinessProbe": {
+                                "httpGet": {"path": path, "port": port},
+                                "initialDelaySeconds": 5,
+                                "periodSeconds": 5,
+                                "timeoutSeconds": 2,
+                                "failureThreshold": 3,
+                            },
+                            "livenessProbe": {
+                                "httpGet": {"path": path, "port": port},
+                                "initialDelaySeconds": 10,
+                                "periodSeconds": 10,
+                                "timeoutSeconds": 2,
+                                "failureThreshold": 3,
+                            },
+                            "volumeMounts": [{"name": "tenant-data", "mountPath": mount_path}],
+                        }],
+                        "volumes": [{
+                            "name": "tenant-data",
+                            "persistentVolumeClaim": {"claimName": pvc_name}
+                        }],
+                    },
+                },
+            },
+        }
+        resp = apps.patch_namespaced_deployment(name=dep_name, namespace=ns, body=patch_body)
+
     except ApiException as e:
         if getattr(e, "status", None) == 404:
-            resp = apps.create_namespaced_deployment(namespace=ns, body=body)
+            resp = apps.create_namespaced_deployment(namespace=ns, body=create_body)
         else:
             raise
 
