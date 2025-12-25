@@ -400,7 +400,8 @@ def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
     port = spec.effective_port
 
     labels = platform_labels({"app": app_label, "role": "active"})
-    selector = {"app": app_label, "role": "active"}
+   selector = {"app": app_label, "slot": "blue"}  
+
 
     try:
         existing = core.read_namespaced_service(name=svc_name, namespace=ns)
@@ -713,100 +714,86 @@ def bg_prepare(spec: AppSpec):
     return {"ok": True, "preview": resp.to_dict()}
 
 
-def bg_promote(name: str, namespace: str) -> dict:
+from kubernetes.client.rest import ApiException
+
+def bg_promote(name: str, namespace: str):
     ns = namespace or get_namespace()
-    apps = get_api_clients()["apps"]
+    apis = get_api_clients()
+    apps = apis["apps"]
+    core = apis["core"]
 
-    preview_dep_name = f"{name}-preview"
-    prod_dep_name = name
+    svc_name = name  # service name = x
+    svc = core.read_namespaced_service(svc_name, ns)
+    sel = svc.spec.selector or {}
 
-    # 1) اقرأ preview deployment وخذ image
-    prev = apps.read_namespaced_deployment(name=preview_dep_name, namespace=ns)
-    if not prev.spec.template.spec.containers:
-        raise RuntimeError(f"No containers found in {preview_dep_name}")
+    current_slot = sel.get("slot", "blue")  # الافتراضي blue
+    new_slot = "green" if current_slot == "blue" else "blue"
 
-    preview_image = prev.spec.template.spec.containers[0].image
+    # تأكد إن deployment الهدف موجود
+    target_dep = f"{name}-{new_slot}"
+    apps.read_namespaced_deployment(target_dep, ns)
 
-    # 2) اقرأ production deployment
-    prod = apps.read_namespaced_deployment(name=prod_dep_name, namespace=ns)
-    if not prod.spec.template.spec.containers:
-        raise RuntimeError(f"No containers found in {prod_dep_name}")
-
-    prod_container_name = prod.spec.template.spec.containers[0].name
-
-    # 3) Patch image فقط (بدون labels/selector نهائياً)
-    patch_body = {
-        "spec": {
-            "template": {
-                "spec": {
-                    "containers": [
-                        {"name": prod_container_name, "image": preview_image}
-                    ]
-                }
-            }
-        }
-    }
-
-    apps.patch_namespaced_deployment(
-        name=prod_dep_name,
+    # 1) بدّل الترافيك: patch service selector
+    core.patch_namespaced_service(
+        name=svc_name,
         namespace=ns,
-        body=patch_body
+        body={"spec": {"selector": {"app": name, "slot": new_slot}}}
     )
 
-    # 4) اختياري: صفّر preview بعد الترقية
+    # 2) شغّل الجديد
+    apps.patch_namespaced_deployment_scale(
+        target_dep, ns, {"spec": {"replicas": 1}}
+    )
+
+    # 3) طفّي القديم (يبقى موجود idle)
+    old_dep = f"{name}-{current_slot}"
     try:
         apps.patch_namespaced_deployment_scale(
-            name=preview_dep_name,
-            namespace=ns,
-            body={"spec": {"replicas": 0}}
+            old_dep, ns, {"spec": {"replicas": 0}}
         )
-    except Exception:
+    except ApiException:
         pass
 
-    return {"promoted": True, "prod_deployment": prod_dep_name, "image": preview_image}
+    return {"ok": True, "active_slot": new_slot}
+
 def bg_rollback(name: str, namespace: str):
     ns = namespace or get_namespace()
-    apps = get_api_clients()["apps"]
+    apis = get_api_clients()
+    apps = apis["apps"]
+    core = apis["core"]
 
-    deps = _find_deployments_by_app(apps, ns, name)
+    svc = core.read_namespaced_service(name, ns)
+    sel = svc.spec.selector or {}
+    current_slot = sel.get("slot", "blue")
 
-    active = None
-    idle = None
-    preview = None
+    rollback_slot = "blue" if current_slot == "green" else "green"
 
-    for d in deps:
-        role = (d.metadata.labels or {}).get("role", "")
-        if role == "active":
-            active = d
-        elif role == "idle":
-            idle = d
-        elif role == "preview":
-            preview = d
+    rollback_dep = f"{name}-{rollback_slot}"
+    apps.read_namespaced_deployment(rollback_dep, ns)
 
-    # ✅ 1) preferred rollback target: idle
-    target = idle
-
-    # ✅ 2) fallback rollback target: preview (إذا ما عندك idle)
-    if not target and preview:
-        target = preview
-
-    if not target:
-        return {"note": "No idle/preview version to rollback to"}
-
-    # 1) target -> active (turn on)
-    _patch_deploy_labels(apps, ns, target.metadata.name, "active")
-    apps.patch_namespaced_deployment_scale(
-        target.metadata.name, ns, {"spec": {"replicas": 1}}
+    # رجّع الترافيك
+    core.patch_namespaced_service(
+        name=name,
+        namespace=ns,
+        body={"spec": {"selector": {"app": name, "slot": rollback_slot}}}
     )
 
-    # 2) current active -> idle (turn off)
-    if active and active.metadata.name != target.metadata.name:
-        _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
-        apps.patch_namespaced_deployment_scale(
-            active.metadata.name, ns, {"spec": {"replicas": 0}}
-        )
+    # شغّل القديم
+    apps.patch_namespaced_deployment_scale(
+        rollback_dep, ns, {"spec": {"replicas": 1}}
+    )
 
-    return {"ok": True, "rolled_back_to": target.metadata.name}
+    # طفّي الحالي
+    current_dep = f"{name}-{current_slot}"
+    try:
+        apps.patch_namespaced_deployment_scale(
+            current_dep, ns, {"spec": {"replicas": 0}}
+        )
+    except ApiException:
+        pass
+
+    return {"ok": True, "active_slot": rollback_slot}
+
 
 
 def _ensure_k8s_config() -> None:
