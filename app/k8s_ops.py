@@ -712,39 +712,58 @@ def bg_prepare(spec: AppSpec):
 
     return {"ok": True, "preview": resp.to_dict()}
 
-def bg_promote(name: str, namespace: str):
+
+def bg_promote(name: str, namespace: str) -> dict:
     ns = namespace or get_namespace()
     apps = get_api_clients()["apps"]
 
-    deps = _find_deployments_by_app(apps, ns, name)
-    preview = None
-    active = None
+    preview_dep_name = f"{name}-preview"
+    prod_dep_name = name
 
-    for d in deps:
-        role = d.metadata.labels.get("role", "")
-        if role == "preview":
-            preview = d
-        elif role == "active":
-            active = d
+    # 1) اقرأ preview deployment وخذ image
+    prev = apps.read_namespaced_deployment(name=preview_dep_name, namespace=ns)
+    if not prev.spec.template.spec.containers:
+        raise RuntimeError(f"No containers found in {preview_dep_name}")
 
-    if not preview:
-        raise ApiException(status=404, reason="No preview deployment found")
+    preview_image = prev.spec.template.spec.containers[0].image
 
-    # 1) Preview becomes active + scale to 1
-    _patch_deploy_labels(apps, ns, preview.metadata.name, "active")
-    apps.patch_namespaced_deployment_scale(
-        preview.metadata.name, ns, {"spec": {"replicas": 1}}
+    # 2) اقرأ production deployment
+    prod = apps.read_namespaced_deployment(name=prod_dep_name, namespace=ns)
+    if not prod.spec.template.spec.containers:
+        raise RuntimeError(f"No containers found in {prod_dep_name}")
+
+    prod_container_name = prod.spec.template.spec.containers[0].name
+
+    # 3) Patch image فقط (بدون labels/selector نهائياً)
+    patch_body = {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {"name": prod_container_name, "image": preview_image}
+                    ]
+                }
+            }
+        }
+    }
+
+    apps.patch_namespaced_deployment(
+        name=prod_dep_name,
+        namespace=ns,
+        body=patch_body
     )
 
-    # 2) Old active becomes idle + scale to 0
-
-    if active:
-        _patch_deploy_labels(apps, ns, active.metadata.name, "idle")
+    # 4) اختياري: صفّر preview بعد الترقية
+    try:
         apps.patch_namespaced_deployment_scale(
-            active.metadata.name, ns, {"spec": {"replicas": 0}}
+            name=preview_dep_name,
+            namespace=ns,
+            body={"spec": {"replicas": 0}}
         )
+    except Exception:
+        pass
 
-    return {"ok": True}
+    return {"promoted": True, "prod_deployment": prod_dep_name, "image": preview_image}
 
 def bg_rollback(name: str, namespace: str):
     ns = namespace or get_namespace()
