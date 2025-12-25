@@ -243,72 +243,6 @@ def create_ingress_for_app(
     print(f"🌍 URL: https://{host}")
 
 
-def upsert_service_preview(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
-    current_ctx = ctx or get_current_context()
-    role = getattr(current_ctx, "role", "")
-    ns = getattr(current_ctx, "k8s_namespace", None) or getattr(spec, "namespace", None) or "default"
-
-    # نفس حماياتك
-    if role == "platform_admin" and ns != "default":
-        raise PermissionError(f"🚫 platform_admin is not allowed to deploy inside customer namespaces ({ns}).")
-    if role != "platform_admin" and ns == "default":
-        raise PermissionError(f"🚫 User '{role}' is not allowed to deploy inside namespace 'default'.")
-
-    core = get_api_clients()["core"]
-
-    app_label = spec.effective_app_label
-    svc_name = f"{app_label}-preview"
-    port = spec.effective_port
-
-    labels = platform_labels({"app": app_label, "role": "preview"})
-    selector = {"app": app_label, "role": "preview"}
-
-    try:
-        existing = core.read_namespaced_service(name=svc_name, namespace=ns)
-        svc_type = existing.spec.type or "ClusterIP"
-        cluster_port = existing.spec.ports[0].port if existing.spec.ports else port
-
-        patch_body = client.V1Service(
-            api_version="v1",
-            metadata=client.V1ObjectMeta(labels=labels),
-            spec=client.V1ServiceSpec(
-                selector=selector,
-                type=svc_type,
-                ports=[client.V1ServicePort(name="http", port=cluster_port, target_port=port, protocol="TCP")],
-            ),
-        )
-        resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
-    except ApiException as e:
-        if getattr(e, "status", None) == 404:
-            create_body = client.V1Service(
-                api_version="v1",
-                kind="Service",
-                metadata=client.V1ObjectMeta(name=svc_name, namespace=ns, labels=labels),
-                spec=client.V1ServiceSpec(
-                    type="ClusterIP",
-                    selector=selector,
-                    ports=[client.V1ServicePort(name="http", port=port, target_port=port, protocol="TCP")],
-                ),
-            )
-            resp = core.create_namespaced_service(namespace=ns, body=create_body)
-        else:
-            raise
-
-    # ✅ ingress preview مستقل
-    host = f"preview-{app_label}.{ns}.apps.smartdevops.lat"
-    create_ingress_for_app(
-        app_name=app_label,
-        namespace=ns,
-        ctx=current_ctx,
-        host=host,
-        ingress_name=f"{app_label}-preview-ingress",
-        tls_secret=f"{app_label}-preview-tls",
-        service_name=svc_name,
-    )
-
-    return resp.to_dict()
-
-
 
 def upsert_preview_deployment(spec: AppSpec) -> dict:
     ns = spec.namespace or get_namespace()
@@ -321,7 +255,11 @@ def upsert_preview_deployment(spec: AppSpec) -> dict:
     port      = spec.effective_port
     path      = spec.effective_health_path
 
-    labels = platform_labels({"app": app_label, "role": "preview"})
+    # ✅ اجعل match_labels ثابتة (هي مصدر الحقيقة)
+    match_labels = {"app": app_label, "role": "preview"}
+
+    # ✅ Labels إضافية (اختياري) للـ metadata فقط
+    meta_labels = platform_labels(match_labels.copy())
 
     # PVC مثل deploy
     pvc_name = getattr(spec, "pvc_name", None) or "tenant-storage"
@@ -332,10 +270,12 @@ def upsert_preview_deployment(spec: AppSpec) -> dict:
 
     mount_path = getattr(spec, "pvc_mount_path", None) or "/data"
     volume_mounts = [client.V1VolumeMount(name="tenant-data", mount_path=mount_path)]
-    volumes = [client.V1Volume(
-        name="tenant-data",
-        persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=pvc_name),
-    )]
+    volumes = [
+        client.V1Volume(
+            name="tenant-data",
+            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name=pvc_name),
+        )
+    ]
 
     container = client.V1Container(
         name=dep_name,
@@ -345,29 +285,36 @@ def upsert_preview_deployment(spec: AppSpec) -> dict:
         volume_mounts=volume_mounts,
         readiness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=5, period_seconds=5, timeout_seconds=2, failure_threshold=3,
+            initial_delay_seconds=5,
+            period_seconds=5,
+            timeout_seconds=2,
+            failure_threshold=3,
         ),
         liveness_probe=client.V1Probe(
             http_get=client.V1HTTPGetAction(path=path, port=port),
-            initial_delay_seconds=10, period_seconds=10, timeout_seconds=2, failure_threshold=3,
+            initial_delay_seconds=10,
+            period_seconds=10,
+            timeout_seconds=2,
+            failure_threshold=3,
         ),
     )
 
+    # ✅ الأهم: template labels لازم تطابق selector 100%
     pod_template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels=labels),
+        metadata=client.V1ObjectMeta(labels=match_labels),
         spec=client.V1PodSpec(containers=[container], volumes=volumes),
     )
 
     dep_spec = client.V1DeploymentSpec(
         replicas=1,
-        selector=client.V1LabelSelector(match_labels={"app": app_label, "role": "preview"}),
+        selector=client.V1LabelSelector(match_labels=match_labels),
         template=pod_template,
     )
 
     body = client.V1Deployment(
         api_version="apps/v1",
         kind="Deployment",
-        metadata=client.V1ObjectMeta(name=dep_name, namespace=ns, labels=labels),
+        metadata=client.V1ObjectMeta(name=dep_name, namespace=ns, labels=meta_labels),
         spec=dep_spec,
     )
 
