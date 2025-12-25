@@ -435,6 +435,76 @@ def upsert_service(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
 
     return resp.to_dict()
 
+from kubernetes import client
+from kubernetes.client.rest import ApiException
+
+def upsert_service_preview(spec: "AppSpec", ctx: "CurrentContext" = None) -> dict:
+    current_ctx = ctx or get_current_context()
+    role = getattr(current_ctx, "role", "")
+    ns = getattr(current_ctx, "k8s_namespace", None) or getattr(spec, "namespace", None) or "default"
+
+    # نفس قواعد الأمان
+    if role == "platform_admin" and ns != "default":
+        raise PermissionError(f"🚫 platform_admin is not allowed to deploy inside customer namespaces ({ns}).")
+    if role != "platform_admin" and ns == "default":
+        raise PermissionError(f"🚫 User '{role}' is not allowed to deploy inside namespace 'default'.")
+
+    core = get_api_clients()["core"]
+
+    app_label = spec.effective_app_label
+    svc_name = f"{app_label}-preview"
+    port = spec.effective_port
+
+    # preview selectors/labels
+    selector = {"app": app_label, "role": "preview"}
+    labels   = platform_labels({"app": app_label, "role": "preview"})
+
+    try:
+        existing = core.read_namespaced_service(name=svc_name, namespace=ns)
+        svc_type = existing.spec.type or "ClusterIP"
+        cluster_port = existing.spec.ports[0].port if existing.spec.ports else port
+
+        patch_body = client.V1Service(
+            api_version="v1",
+            metadata=client.V1ObjectMeta(labels=labels),
+            spec=client.V1ServiceSpec(
+                selector=selector,
+                type=svc_type,
+                ports=[client.V1ServicePort(name="http", port=cluster_port, target_port=port, protocol="TCP")],
+            ),
+        )
+        resp = core.patch_namespaced_service(name=svc_name, namespace=ns, body=patch_body)
+
+    except ApiException as e:
+        if getattr(e, "status", None) == 404:
+            create_body = client.V1Service(
+                api_version="v1",
+                kind="Service",
+                metadata=client.V1ObjectMeta(name=svc_name, namespace=ns, labels=labels),
+                spec=client.V1ServiceSpec(
+                    type="ClusterIP",
+                    selector=selector,
+                    ports=[client.V1ServicePort(name="http", port=port, target_port=port, protocol="TCP")],
+                ),
+            )
+            resp = core.create_namespaced_service(namespace=ns, body=create_body)
+        else:
+            raise
+
+    # ✅ Ingress preview (hostname الصحيح)
+    host = f"preview-{app_label}.{ns}.apps.smartdevops.lat"
+    create_ingress_for_app(
+        app_name=app_label,
+        namespace=ns,
+        ctx=current_ctx,
+        host=host,
+        ingress_name=f"{app_label}-preview-ingress",
+        tls_secret=f"{app_label}-preview-tls",
+        service_name=svc_name,
+    )
+
+    return resp.to_dict()
+
 # ---- Status / Scale / Blue-Green (Part 2/3) ----
 
 def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> StatusResponse:
