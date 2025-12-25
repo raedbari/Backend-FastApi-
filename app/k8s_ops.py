@@ -714,7 +714,6 @@ def bg_prepare(spec: AppSpec):
     return {"ok": True, "preview": resp.to_dict()}
 
 
-from kubernetes.client.rest import ApiException
 
 def bg_promote(name: str, namespace: str):
     ns = namespace or get_namespace()
