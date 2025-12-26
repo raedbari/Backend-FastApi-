@@ -2,23 +2,21 @@
 # Data schemas exchanged between frontend and backend. Pydantic v2.
 
 from __future__ import annotations
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional ,Any
 from pydantic import BaseModel, Field
 import os
 from sqlalchemy import (
     Column, Integer, String, Index, DateTime, ForeignKey, func,
-    UniqueConstraint, CheckConstraint, Text
+    UniqueConstraint, CheckConstraint, Text ,  BigInteger
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy import BigInteger
 
 # SQLAlchemy Base
 from .db import Base
 from sqlalchemy.dialects.postgresql import JSONB
 
-# --------------------------------------------------------------------
-# --------------------------- Pydantic -------------------------------
-# --------------------------------------------------------------------
+# ------------------------- Pydantic -------------------------------
+
 
 DNS1123_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 DEFAULT_NS = os.getenv("DEFAULT_NAMESPACE", "default")
@@ -106,9 +104,7 @@ class StatusResponse(BaseModel):
     items: List[StatusItem]
 
 
-# --------------------------------------------------------------------
 # ------------------------- SQLAlchemy -------------------------------
-# --------------------------------------------------------------------
 
 class Tenant(Base):
     __tablename__ = "tenants"
@@ -163,9 +159,7 @@ class ProvisioningRun(Base):
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
 
-# --------------------------------------------------------------------
 # ------------------------- Activity Logs -----------------------------
-# --------------------------------------------------------------------
 
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
@@ -185,3 +179,31 @@ class ActivityLog(Base):
     user_agent = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+
+class BillingEvent(Base):
+    __tablename__ = "billing_events"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_ns = Column(Text, nullable=False)
+    user_id = Column(Text, nullable=False)
+    app = Column(Text, nullable=False)
+    host = Column(Text, nullable=True)
+    event_type = Column(Text, nullable=False, default="open_app")
+    ts = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    idempotency_key = Column(Text, nullable=False)
+    meta = Column(JSONB, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_ns", "idempotency_key", name="ux_billing_events_tenant_idem"),
+        Index("ix_billing_events_tenant_ts", "tenant_ns", "ts"),
+        Index("ix_billing_events_tenant_event_ts", "tenant_ns", "event_type", "ts"),
+    )
+
+
+class OpenAppEventIn(BaseModel):
+    app: str
+    host: Optional[str] = None
+    idempotency_key: str
+    meta: Optional[Dict[str, Any]] = None

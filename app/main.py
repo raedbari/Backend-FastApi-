@@ -28,6 +28,9 @@ from app.k8s_ops import (
     bg_prepare, bg_promote, bg_rollback, delete_app
 )
 
+from sqlalchemy.exc import IntegrityError
+from .models import BillingEvent, OpenAppEventIn
+
 from app.mailer import send_email
 from app.config import JWT_SECRET, JWT_ALG
 
@@ -398,3 +401,79 @@ def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+
+
+
+@api.post("/billing/open-app")
+async def billing_open_app(
+    payload: OpenAppEventIn,
+    ctx: CurrentContext = Depends(get_current_context),
+    db: Session = Depends(get_db),
+):
+    tenant_ns = ctx.k8s_namespace
+    user_id = ctx.email
+
+    ev = BillingEvent(
+        tenant_ns=tenant_ns,
+        user_id=user_id,
+        app=payload.app,
+        host=payload.host,
+        event_type="open_app",
+        idempotency_key=payload.idempotency_key,
+        meta=payload.meta,
+    )
+
+    try:
+        db.add(ev)
+        db.commit()
+        return {"ok": True, "deduped": False}
+    except IntegrityError:
+        db.rollback()
+        return {"ok": True, "deduped": True}
+
+from datetime import datetime, timedelta
+from fastapi import Query
+
+@api.get("/billing/summary")
+async def billing_summary(
+    hours: int = Query(24, ge=1, le=720),
+    ctx: CurrentContext = Depends(get_current_context),
+    db: Session = Depends(get_db),
+):
+    tenant_ns = ctx.k8s_namespace
+    to_ts = datetime.utcnow()
+    from_ts = to_ts - timedelta(hours=hours)
+
+    requests_count = db.execute(
+        """
+        SELECT count(*)
+        FROM billing_events
+        WHERE tenant_ns = :ns
+          AND event_type = 'open_app'
+          AND ts BETWEEN :from_ts AND :to_ts
+        """,
+        {"ns": tenant_ns, "from_ts": from_ts, "to_ts": to_ts},
+    ).scalar() or 0
+
+    users_count = db.execute(
+        """
+        SELECT count(distinct user_id)
+        FROM billing_events
+        WHERE tenant_ns = :ns
+          AND ts BETWEEN :from_ts AND :to_ts
+        """,
+        {"ns": tenant_ns, "from_ts": from_ts, "to_ts": to_ts},
+    ).scalar() or 0
+
+    price_per_1000 = 1.0  # غيّرها لاحقًا
+    requests_cost = (requests_count / 1000.0) * price_per_1000
+
+    return {
+        "ok": True,
+        "tenant_ns": tenant_ns,
+        "hours": hours,
+        "requests_count": int(requests_count),
+        "users_count": int(users_count),
+        "price_per_1000_requests": price_per_1000,
+        "requests_cost": float(requests_cost),
+    }

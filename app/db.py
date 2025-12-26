@@ -30,7 +30,7 @@ def init_db():
     Create tables + seed a demo tenant with an admin user.
     Called once during startup.
     """
-    from .models import Tenant, User  # noqa
+    from .models import Tenant, User, BillingEvent  # noqa
 
     # Create tables if they don’t exist
     Base.metadata.create_all(bind=engine)

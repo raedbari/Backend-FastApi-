@@ -601,7 +601,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
 
         items.append(
             StatusItem(
-                name=d_name,                 # اسم k8s الحقيقي (x1 أو x1-preview)
+                name=d_name,                 
                 image=image,
                 desired=spec.replicas or 0,
                 current=status.replicas or 0,
