@@ -401,15 +401,14 @@ def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-
-
-
 @api.post("/billing/open-app")
 async def billing_open_app(
     payload: OpenAppEventIn,
     ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
 ):
+    print("🔥 OPEN APP EVENT RECEIVED", payload)
+
     tenant_ns = ctx.k8s_namespace
     user_id = ctx.email
 
@@ -426,6 +425,7 @@ async def billing_open_app(
     try:
         db.add(ev)
         db.commit()
+        print("✅ BILLING EVENT COMMITTED")
         return {"ok": True, "deduped": False}
     except IntegrityError:
         db.rollback()
