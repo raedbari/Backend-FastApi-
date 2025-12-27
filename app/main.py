@@ -380,11 +380,7 @@ async def delete_app_api(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# -------------------------------------------------------------------
-# Attach API Router
-# -------------------------------------------------------------------
-app.include_router(api)
-app.include_router(logs_router)  
+
 
 # -------------------------------------------------------------------
 # Startup
@@ -392,7 +388,6 @@ app.include_router(logs_router)
 @app.on_event("startup")
 def _startup():
     init_db()
-
 
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response
@@ -489,3 +484,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     print("body =", body)
     print("errors =", exc.errors())
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+# -------------------------------------------------------------------
+# Attach API Router
+# -------------------------------------------------------------------
+app.include_router(api)
+app.include_router(logs_router)  
