@@ -38,6 +38,10 @@ from app.config import JWT_SECRET, JWT_ALG
 from app.logs.logger import log_event
 from .k8s_ops import bg_prepare_full
 
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
 # -------------------------------------------------------------------
 # FastAPI App
 # -------------------------------------------------------------------
@@ -477,3 +481,14 @@ async def billing_summary(
         "price_per_1000_requests": price_per_1000,
         "requests_cost": float(requests_cost),
     }
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    try:
+        body = await request.json()
+    except Exception:
+        body = "<non-json body>"
+    print("❌ 422", request.method, request.url.path)
+    print("body =", body)
+    print("errors =", exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
