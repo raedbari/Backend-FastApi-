@@ -19,7 +19,6 @@ from app.onboarding import router as onboarding_router, admin_router as onboardi
 from app.monitor import router as monitor_router
 from app.logs.routes import router as logs_router
 from app.alerts.webhook import router as alerts_router
-from app.billing.routes import router as billing_router
 
 # Models / Ops
 from app.models import AppSpec, ScaleRequest, StatusResponse
