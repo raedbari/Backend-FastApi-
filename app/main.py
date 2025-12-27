@@ -38,7 +38,6 @@ from app.config import JWT_SECRET, JWT_ALG
 from app.logs.logger import log_event
 from .k8s_ops import bg_prepare_full
 
-
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -387,7 +386,6 @@ async def delete_app_api(
 # -------------------------------------------------------------------
 app.include_router(api)
 app.include_router(logs_router)  
-app.include_router(billing_router)
 
 # -------------------------------------------------------------------
 # Startup
