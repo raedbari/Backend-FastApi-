@@ -78,7 +78,7 @@ class AppSpec(BaseModel):
 
 class ScaleRequest(BaseModel):
     name: str
-    replicas: int = Field(..., ge=1, le=100)
+    replicas: int = Field(..., ge=0, le=100)
     namespace: str = Field(default=DEFAULT_NS, pattern=DNS1123_LABEL)
 
 class StatusItem(BaseModel):
