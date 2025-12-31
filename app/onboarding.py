@@ -33,15 +33,38 @@ router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 WEBHOOK_URL = os.getenv("ONBOARDING_WEBHOOK_URL", "").strip()
 
+
 def sanitize_namespace(ns: str) -> str:
-    """
-    تنظيف اسم الـnamespace للتأكد من أنه متوافق مع قواعد Kubernetes.
-    """
     ns = ns.strip().lower()
-    ns = re.sub(r'[^a-z0-9\-]', '-', ns)   # استبدال الأحرف غير المسموح بها بـ -
-    ns = re.sub(r'(^-+|-+$)', '', ns)      # إزالة الشرطات الزائدة
+    ns = re.sub(r'[^a-z0-9\-]', '-', ns)
+    ns = re.sub(r'(^-+|-+$)', '', ns)
+
     if not re.match(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', ns):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid namespace format")
+
+    reserved = {
+        "default",
+        "kube-system",
+        "kube-public",
+        "kube-node-lease",
+        "ingress-nginx",
+        "cert-manager",
+        "monitoring",
+        "prometheus",
+        "grafana",
+    }
+
+
+    platform_ns = (os.getenv("PLATFORM_NAMESPACE") or os.getenv("NAMESPACE") or "").strip().lower()
+    if platform_ns:
+        reserved.add(platform_ns)
+
+    if ns in reserved:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Namespace '{ns}' is reserved/system and not allowed."
+        )
+
     return ns
 
 
@@ -183,7 +206,7 @@ def _provision_tenant(tenant_id: int):
 # ---------- public endpoints ----------
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
-    # 🔹 1. تنظيف الـ namespace
+    # 🔹 1. تنظيف الـ namespace (هنا سيتم رفض default/ingress-nginx/cert-manager... عبر sanitize_namespace)
     try:
         clean_ns = sanitize_namespace(payload.namespace)
     except HTTPException as e:
@@ -208,7 +231,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     if rejected_tenants:
         db.commit()
 
-    # 🔹 3. التحقق من وجود Tenant بنفس الاسم أو namespace
+    # 🔹 3. التحقق من وجود Tenant بنفس الاسم أو namespace (غير مرفوض)
     existing_tenant = db.execute(
         select(Tenant).where(
             or_(
@@ -219,23 +242,25 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         )
     ).scalar_one_or_none()
 
+    # ✅ ممنوع الانضمام لتينانت موجود
+    if existing_tenant:
+        raise HTTPException(
+            status_code=409,
+            detail="Tenant already exists with same company or namespace. Joining existing tenants is not allowed."
+        )
+
     try:
-        # ✅ إذا لم يوجد Tenant، ننشئ واحد جديد
-        if not existing_tenant:
-            t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
-            db.add(t)
-            db.flush()
-        else:
-            # ✅ موجود بالفعل، نستخدمه
-            t = existing_tenant
+        # ✅ دائمًا ننشئ Tenant جديد (بدون انضمام)
+        t = Tenant(name=payload.company, k8s_namespace=clean_ns, status="pending")
+        db.add(t)
+        db.flush()
 
-        # ✅ تحقق من أن المستخدم غير مسجل مسبقًا داخل نفس الشركة
+        # ✅ تحقق من أن الإيميل غير مستخدم مسبقًا (email عندك unique عالميًا)
         user_exists = db.execute(
-            select(User).where(User.email == payload.email, User.tenant_id == t.id)
+            select(User).where(User.email == payload.email)
         ).scalar_one_or_none()
-
         if user_exists:
-            raise HTTPException(409, detail="User with this email already exists in the company.")
+            raise HTTPException(409, detail="Email already registered.")
 
         # ✅ إنشاء المستخدم الجديد
         pwd_hash = pbkdf2_sha256.hash(payload.password)
@@ -250,6 +275,9 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
         db.refresh(t)
         db.refresh(new_user)
 
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(500, detail=f"Registration failed: {str(e)}")
