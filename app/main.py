@@ -500,7 +500,6 @@ from app.billing_utils import prom_storage_gb
 PRICE_PER_1000 = float(os.getenv("PRICE_PER_1000_REQUESTS", "5"))   # انت قلت 5$
 PRICE_PER_GB   = float(os.getenv("PRICE_PER_GB", "0.0"))            # حط قيمتك
 PROFIT_FIXED   = float(os.getenv("PROFIT_FIXED_PER_TENANT", "5"))   # ربحك 5$
-
 @api.get("/admin/billing/overview", response_model=AdminBillingOverview)
 async def admin_billing_overview(
     days: int = Query(30, ge=1, le=365),
@@ -514,8 +513,7 @@ async def admin_billing_overview(
     to_ts = datetime.utcnow()
     from_ts = to_ts - timedelta(days=days)
 
-    # 1) جيب كل tenants + ايميل واحد لكل tenant
-    # (هنا اخترت أول ايميل مرتبط بالـ tenant)
+    # 1) جيب كل tenants + ايميل واحد لكل tenant (أول ايميل)
     rows = db.execute(text("""
         SELECT
           t.k8s_namespace AS ns,
@@ -540,25 +538,31 @@ async def admin_billing_overview(
             FROM billing_events
             WHERE tenant_ns = :ns
               AND event_type = 'open_app'
-              AND ts BETWEEN :from_ts AND :to_ts
+              AND ts >= :from_ts
+              AND ts <= :to_ts
         """), {"ns": ns, "from_ts": from_ts, "to_ts": to_ts}).scalar() or 0
 
-        requests_cost = (float(requests_count) / 1000.0) * PRICE_PER_1000
+        requests_count = int(requests_count)
+        requests_cost = (float(requests_count) / 1000.0) * float(PRICE_PER_1000)
 
-        # 3) storage_cost من Prometheus
-        storage_gb = prom_storage_gb(ns)
-        storage_cost = storage_gb * PRICE_PER_GB
+        # 3) storage_cost من Prometheus (مع حماية لو صار خطأ)
+        try:
+            storage_gb = float(prom_storage_gb(ns) or 0.0)
+        except Exception:
+            storage_gb = 0.0
 
-        total = requests_cost + storage_cost + PROFIT_FIXED
+        storage_cost = storage_gb * float(PRICE_PER_GB)
+
+        # 4) total = requests + storage + profit
+        total = float(requests_cost) + float(storage_cost) + float(PROFIT_FIXED)
 
         items.append(AdminBillingRow(
             email=email,
             namespace=ns,
-            total_bill=round(float(total), 2),
+            total_bill=round(total, 2),
         ))
 
     return AdminBillingOverview(items=items)
-
 # -------------------------------------------------------------------
 # Attach API Router
 # -------------------------------------------------------------------
