@@ -485,8 +485,83 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     print("errors =", exc.errors())
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
+
+from datetime import datetime, timedelta
+from fastapi import HTTPException, Depends, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+import os
+
+from app.db import get_db
+from app.auth import get_current_context
+from app.models import AdminBillingOverview, AdminBillingRow
+from app.billing_utils import prom_storage_gb
+
+PRICE_PER_1000 = float(os.getenv("PRICE_PER_1000_REQUESTS", "5"))   # انت قلت 5$
+PRICE_PER_GB   = float(os.getenv("PRICE_PER_GB", "0.0"))            # حط قيمتك
+PROFIT_FIXED   = float(os.getenv("PROFIT_FIXED_PER_TENANT", "5"))   # ربحك 5$
+
+@api.get("/admin/billing/overview", response_model=AdminBillingOverview)
+async def admin_billing_overview(
+    days: int = Query(30, ge=1, le=365),
+    ctx = Depends(get_current_context),
+    db: Session = Depends(get_db),
+):
+    # ✅ حماية: الصفحة لك فقط
+    if getattr(ctx, "role", "") != "platform_admin":
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    to_ts = datetime.utcnow()
+    from_ts = to_ts - timedelta(days=days)
+
+    # 1) جيب كل tenants + ايميل واحد لكل tenant
+    # (هنا اخترت أول ايميل مرتبط بالـ tenant)
+    rows = db.execute(text("""
+        SELECT
+          t.k8s_namespace AS ns,
+          COALESCE(MIN(u.email), '') AS email
+        FROM tenants t
+        LEFT JOIN users u ON u.tenant_id = t.id
+        WHERE t.status = 'active'
+          AND t.k8s_namespace IS NOT NULL
+        GROUP BY t.k8s_namespace
+        ORDER BY t.k8s_namespace
+    """)).fetchall()
+
+    items = []
+
+    for r in rows:
+        ns = r.ns
+        email = r.email or ""
+
+        # 2) requests_count من Postgres
+        requests_count = db.execute(text("""
+            SELECT count(*)
+            FROM billing_events
+            WHERE tenant_ns = :ns
+              AND event_type = 'open_app'
+              AND ts BETWEEN :from_ts AND :to_ts
+        """), {"ns": ns, "from_ts": from_ts, "to_ts": to_ts}).scalar() or 0
+
+        requests_cost = (float(requests_count) / 1000.0) * PRICE_PER_1000
+
+        # 3) storage_cost من Prometheus
+        storage_gb = prom_storage_gb(ns)
+        storage_cost = storage_gb * PRICE_PER_GB
+
+        total = requests_cost + storage_cost + PROFIT_FIXED
+
+        items.append(AdminBillingRow(
+            email=email,
+            namespace=ns,
+            total_bill=round(float(total), 2),
+        ))
+
+    return AdminBillingOverview(items=items)
+
 # -------------------------------------------------------------------
 # Attach API Router
 # -------------------------------------------------------------------
 app.include_router(api)
 app.include_router(logs_router)  
+

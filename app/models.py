@@ -208,3 +208,11 @@ class OpenAppEventIn(BaseModel):
     meta: Optional[Dict[str, Any]] = None
 
 
+
+class AdminBillingRow(BaseModel):
+    email: str
+    namespace: str
+    total_bill: float
+
+class AdminBillingOverview(BaseModel):
+    items: List[AdminBillingRow]
