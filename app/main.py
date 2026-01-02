@@ -498,7 +498,7 @@ from app.models import AdminBillingOverview, AdminBillingRow
 from app.billing_utils import prom_storage_gb
 
 PRICE_PER_1000 = float(os.getenv("PRICE_PER_1000_REQUESTS", "5"))   # انت قلت 5$
-PRICE_PER_GB   = float(os.getenv("PRICE_PER_GB", "0.0"))            # حط قيمتك
+PRICE_PER_GB   = float(os.getenv("PRICE_PER_GB", "10"))            # حط قيمتك
 PROFIT_FIXED   = float(os.getenv("PROFIT_FIXED_PER_TENANT", "5"))   # ربحك 5$
 @api.get("/admin/billing/overview", response_model=AdminBillingOverview)
 async def admin_billing_overview(
