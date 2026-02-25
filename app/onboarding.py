@@ -579,40 +579,24 @@ def reject(
     if not t:
         raise HTTPException(404, detail="Tenant not found")
 
-    # ✅ Audit قبل الحذف
-    _audit(db, t.id, "reject", actor=ctx.email, result=body.reason or "rejected")
+    # 1) Soft reject tenant
+    t.status = "rejected"
+    db.add(t)
 
-    # ✅ احذف Users المرتبطين
-    db.execute(delete(User).where(User.tenant_id == t.id))
+    # 2) (اختياري لكن مهم) اجعل كل users لهذا tenant ممنوعين
+    db.query(User).filter(User.tenant_id == tenant_id).update(
+        {"role": "rejected_user"}, synchronize_session=False
+    )
 
-    # (اختياري) احذف أي سجلات أخرى مرتبطة بالـ tenant_id
-    # db.execute(delete(ActivityLog).where(ActivityLog.tenant_id == t.id))
-
-    # ✅ احذف Tenant نفسه
-    db.delete(t)
-
-    # ✅ Commit DB
     db.commit()
 
-    # ✅ K8s delete namespace: لا تجعلها تفشل الـ request
-    try:
-        try:
-            config.load_incluster_config()
-        except:
-            config.load_kube_config()
+    _audit(db, t.id, "reject", actor=ctx.email, result=body.reason or "rejected")
 
-        k8s = client.CoreV1Api()
-        try:
-            k8s.delete_namespace(name=t.k8s_namespace)
-        except client.exceptions.ApiException as e:
-            # تجاهل 404، والباقي لا يكسر العملية
-            if e.status != 404:
-                return {"ok": True, "msg": "Rejected & deleted from DB. Namespace delete failed.", "k8s_error": str(e)}
+    # 3) (اختياري) لا تحذف namespace في soft reject
+    # إذا تريد تتركه: لا تعمل delete_namespace
+    # إذا تريد تنظف موارد Kubernetes: اعمل delete_namespace هنا
 
-    except Exception as e:
-        return {"ok": True, "msg": "Rejected & deleted from DB. K8s cleanup failed.", "k8s_error": str(e)}
-
-    return {"ok": True, "msg": f"Tenant rejected and deleted. Namespace '{t.k8s_namespace}' removed"}
+    return {"ok": True, "msg": f"Tenant '{t.name}' rejected"}
 # to let the pending page know that the tenant have been approved 
 @router.get("/me/status")
 def get_my_tenant_status(
