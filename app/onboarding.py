@@ -562,6 +562,10 @@ class RejectPayload(BaseModel):
 #     return {"ok": True, "msg": f"Tenant '{t.name}' rejected and namespace '{t.k8s_namespace}' removed"}
 
 
+
+class RejectPayload(BaseModel):
+    reason: Optional[str] = None
+
 @admin_router.post("/{tenant_id}/reject")
 def reject(
     tenant_id: int,
@@ -575,38 +579,40 @@ def reject(
     if not t:
         raise HTTPException(404, detail="Tenant not found")
 
-    # 1) Audit قبل الحذف (حتى يبقى سجل الرفض)
+    # ✅ Audit قبل الحذف
     _audit(db, t.id, "reject", actor=ctx.email, result=body.reason or "rejected")
 
-    # 2) احذف users المرتبطين بهذا tenant (لو عندك tenant_id في users)
+    # ✅ احذف Users المرتبطين
     db.execute(delete(User).where(User.tenant_id == t.id))
 
-    # (اختياري) احذف أي جداول أخرى مرتبطة بالـ tenant_id
+    # (اختياري) احذف أي سجلات أخرى مرتبطة بالـ tenant_id
     # db.execute(delete(ActivityLog).where(ActivityLog.tenant_id == t.id))
-    # db.execute(delete(BillingOpenApp).where(BillingOpenApp.tenant_id == t.id))
 
-    # 3) احذف tenant نفسه
+    # ✅ احذف Tenant نفسه
     db.delete(t)
 
-    # 4) Commit
+    # ✅ Commit DB
     db.commit()
 
-    # 5) احذف الـ namespace (K8s) - خليها بعد commit عشان حتى لو فشل k8s ما ترجع البيانات
+    # ✅ K8s delete namespace: لا تجعلها تفشل الـ request
     try:
-        config.load_incluster_config()
-    except:
-        config.load_kube_config()
+        try:
+            config.load_incluster_config()
+        except:
+            config.load_kube_config()
 
-    k8s = client.CoreV1Api()
-    try:
-        k8s.delete_namespace(name=t.k8s_namespace)
-    except client.exceptions.ApiException as e:
-        if e.status != 404:
-            # ما نرجّع DB، فقط نرجّع تحذير
-            return {"ok": True, "msg": "Rejected & deleted from DB, but namespace delete failed", "k8s_error": str(e)}
+        k8s = client.CoreV1Api()
+        try:
+            k8s.delete_namespace(name=t.k8s_namespace)
+        except client.exceptions.ApiException as e:
+            # تجاهل 404، والباقي لا يكسر العملية
+            if e.status != 404:
+                return {"ok": True, "msg": "Rejected & deleted from DB. Namespace delete failed.", "k8s_error": str(e)}
 
-    return {"ok": True, "msg": f"Tenant '{t.name}' rejected and deleted (DB). Namespace '{t.k8s_namespace}' removed"}
+    except Exception as e:
+        return {"ok": True, "msg": "Rejected & deleted from DB. K8s cleanup failed.", "k8s_error": str(e)}
 
+    return {"ok": True, "msg": f"Tenant rejected and deleted. Namespace '{t.k8s_namespace}' removed"}
 # to let the pending page know that the tenant have been approved 
 @router.get("/me/status")
 def get_my_tenant_status(
