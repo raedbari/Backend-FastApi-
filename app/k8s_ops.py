@@ -686,6 +686,7 @@ def get_preview_ready(app_label: str, ns: str) -> bool:
     return (st.available_replicas or 0) > 0
 
 
+
 # ----------------------------- Blue/Green ops -----------------------------
 def bg_prepare(spec: AppSpec):
     ns = spec.namespace or get_namespace()
