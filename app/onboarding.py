@@ -529,6 +529,39 @@ class RejectPayload(BaseModel):
     reason: Optional[str] = None
 
 
+# @admin_router.post("/{tenant_id}/reject")
+# def reject(
+#     tenant_id: int,
+#     body: RejectPayload,
+#     ctx: CurrentContext = Depends(get_current_context),
+#     db: Session = Depends(get_db),
+# ):
+#     _ensure_admin(ctx)
+#     t = db.get(Tenant, tenant_id)
+#     if not t:
+#         raise HTTPException(404, detail="Tenant not found")
+
+#     t.status = "rejected"
+#     db.add(t)
+#     db.commit()
+#     _audit(db, t.id, "reject", actor=ctx.email, result=body.reason or "rejected")
+
+#     # حذف الـnamespace إن وُجد
+#     try:
+#         config.load_incluster_config()
+#     except:
+#         config.load_kube_config()
+
+#     k8s = client.CoreV1Api()
+#     try:
+#         k8s.delete_namespace(name=t.k8s_namespace)
+#     except client.exceptions.ApiException as e:
+#         if e.status != 404:
+#             raise
+
+#     return {"ok": True, "msg": f"Tenant '{t.name}' rejected and namespace '{t.k8s_namespace}' removed"}
+
+
 @admin_router.post("/{tenant_id}/reject")
 def reject(
     tenant_id: int,
@@ -537,16 +570,28 @@ def reject(
     db: Session = Depends(get_db),
 ):
     _ensure_admin(ctx)
+
     t = db.get(Tenant, tenant_id)
     if not t:
         raise HTTPException(404, detail="Tenant not found")
 
-    t.status = "rejected"
-    db.add(t)
-    db.commit()
+    # 1) Audit قبل الحذف (حتى يبقى سجل الرفض)
     _audit(db, t.id, "reject", actor=ctx.email, result=body.reason or "rejected")
 
-    # حذف الـnamespace إن وُجد
+    # 2) احذف users المرتبطين بهذا tenant (لو عندك tenant_id في users)
+    db.execute(delete(User).where(User.tenant_id == t.id))
+
+    # (اختياري) احذف أي جداول أخرى مرتبطة بالـ tenant_id
+    # db.execute(delete(ActivityLog).where(ActivityLog.tenant_id == t.id))
+    # db.execute(delete(BillingOpenApp).where(BillingOpenApp.tenant_id == t.id))
+
+    # 3) احذف tenant نفسه
+    db.delete(t)
+
+    # 4) Commit
+    db.commit()
+
+    # 5) احذف الـ namespace (K8s) - خليها بعد commit عشان حتى لو فشل k8s ما ترجع البيانات
     try:
         config.load_incluster_config()
     except:
@@ -557,10 +602,10 @@ def reject(
         k8s.delete_namespace(name=t.k8s_namespace)
     except client.exceptions.ApiException as e:
         if e.status != 404:
-            raise
+            # ما نرجّع DB، فقط نرجّع تحذير
+            return {"ok": True, "msg": "Rejected & deleted from DB, but namespace delete failed", "k8s_error": str(e)}
 
-    return {"ok": True, "msg": f"Tenant '{t.name}' rejected and namespace '{t.k8s_namespace}' removed"}
-
+    return {"ok": True, "msg": f"Tenant '{t.name}' rejected and deleted (DB). Namespace '{t.k8s_namespace}' removed"}
 
 # to let the pending page know that the tenant have been approved 
 @router.get("/me/status")
