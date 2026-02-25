@@ -1,79 +1,3 @@
-# name: backend-ci
-
-# on:
-#   push:
-#     branches: ["main"]
-#   workflow_dispatch:
-
-# concurrency:
-#   group: backend-${{ github.ref }}
-#   cancel-in-progress: true
-
-# jobs:
-#   build_and_push:
-#     name: Build & Push Docker image
-#     runs-on: ubuntu-latest
-#     env:
-#       KUBECONFIG: /etc/kubernetes/admin.conf
-#       IMAGE: raedbari/platform-api
-#       TAG: ${{ github.sha }}
-#     steps:
-#       - uses: actions/checkout@v4
-#       - uses: docker/setup-buildx-action@v3
-
-#       - name: Login to Docker Hub
-#         uses: docker/login-action@v3
-#         with:
-#           username: ${{ secrets.DOCKERHUB_USERNAME }}
-#           password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-#       - name: Build and push image
-#         uses: docker/build-push-action@v6
-#         with:
-#           context: .
-#           push: true
-#           tags: |
-#             ${{ env.IMAGE }}:${{ env.TAG }}
-#           cache-from: type=gha
-#           cache-to: type=gha,mode=max
-
-#   deploy_to_k8s:
-#     name: Set image & rollout on cluster
-#     needs: build_and_push
-#     runs-on: self-hosted
-#     env:
-#       IMAGE: raedbari/platform-api
-#       TAG: ${{ github.sha }}
-#       NAMESPACE: default
-#       DEPLOYMENT: platform-api
-#       CONTAINER: api
-#     steps:
-#       - name: Sanity check
-#         shell: bash
-#         run: |
-#           set -euo pipefail
-#           kubectl version --client
-#           kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" -o name
-
-#       - name: Update image & wait for rollout
-#         shell: bash
-#         run: |
-#           kubectl -n "$NAMESPACE" set image deploy/"$DEPLOYMENT" \
-#             "$CONTAINER"="${IMAGE}:${TAG}"
-
-#           kubectl -n "$NAMESPACE" annotate deploy/"$DEPLOYMENT" \
-#             ci.commit="${GITHUB_SHA}" ci.tag="${TAG}" --overwrite
-
-#           kubectl -n "$NAMESPACE" rollout status deploy/"$DEPLOYMENT" --timeout=300s
-
-#           echo -n "Resulting image: "
-#           kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" \
-#             -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
-
-
-
-
-
 name: backend-ci
 
 on:
@@ -86,52 +10,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_scan_and_push:
-    name: Build + Trivy Scan + Push Docker image
+  build_and_push:
+    name: Build & Push Docker image
     runs-on: ubuntu-latest
     env:
+      KUBECONFIG: /etc/kubernetes/admin.conf
       IMAGE: raedbari/platform-api
       TAG: ${{ github.sha }}
-      IMAGE_REF: raedbari/platform-api:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
-      # 1) Build locally (no push) so Trivy can scan it
-      - name: Build image (local)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          load: true
-          tags: ${{ env.IMAGE_REF }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # 2) Trivy scan (fail pipeline on HIGH/CRITICAL)
-      - name: Trivy Scan (HIGH,CRITICAL)
-        uses: aquasecurity/trivy-action@0.24.0
-        with:
-          image-ref: ${{ env.IMAGE_REF }}
-          format: table
-          exit-code: "1"
-          severity: "HIGH,CRITICAL"
-          vuln-type: "os,library"
-          ignore-unfixed: true
-
-      # 3) Login then push only if scan passed
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      - name: Push image
-        run: docker push ${{ env.IMAGE_REF }}
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy_to_k8s:
     name: Set image & rollout on cluster
-    needs: build_scan_and_push
+    needs: build_and_push
     runs-on: self-hosted
     env:
       IMAGE: raedbari/platform-api
@@ -161,4 +69,96 @@ jobs:
           echo -n "Resulting image: "
           kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" \
             -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+
+
+
+
+
+# name: backend-ci
+
+# on:
+#   push:
+#     branches: ["main"]
+#   workflow_dispatch:
+
+# concurrency:
+#   group: backend-${{ github.ref }}
+#   cancel-in-progress: true
+
+# jobs:
+#   build_scan_and_push:
+#     name: Build + Trivy Scan + Push Docker image
+#     runs-on: ubuntu-latest
+#     env:
+#       IMAGE: raedbari/platform-api
+#       TAG: ${{ github.sha }}
+#       IMAGE_REF: raedbari/platform-api:${{ github.sha }}
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: docker/setup-buildx-action@v3
+
+#       # 1) Build locally (no push) so Trivy can scan it
+#       - name: Build image (local)
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           push: false
+#           load: true
+#           tags: ${{ env.IMAGE_REF }}
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#       # 2) Trivy scan (fail pipeline on HIGH/CRITICAL)
+#       - name: Trivy Scan (HIGH,CRITICAL)
+#         uses: aquasecurity/trivy-action@0.24.0
+#         with:
+#           image-ref: ${{ env.IMAGE_REF }}
+#           format: table
+#           exit-code: "1"
+#           severity: "HIGH,CRITICAL"
+#           vuln-type: "os,library"
+#           ignore-unfixed: true
+
+#       # 3) Login then push only if scan passed
+#       - name: Login to Docker Hub
+#         uses: docker/login-action@v3
+#         with:
+#           username: ${{ secrets.DOCKERHUB_USERNAME }}
+#           password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+#       - name: Push image
+#         run: docker push ${{ env.IMAGE_REF }}
+
+#   deploy_to_k8s:
+#     name: Set image & rollout on cluster
+#     needs: build_scan_and_push
+#     runs-on: self-hosted
+#     env:
+#       IMAGE: raedbari/platform-api
+#       TAG: ${{ github.sha }}
+#       NAMESPACE: default
+#       DEPLOYMENT: platform-api
+#       CONTAINER: api
+#     steps:
+#       - name: Sanity check
+#         shell: bash
+#         run: |
+#           set -euo pipefail
+#           kubectl version --client
+#           kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" -o name
+
+#       - name: Update image & wait for rollout
+#         shell: bash
+#         run: |
+#           kubectl -n "$NAMESPACE" set image deploy/"$DEPLOYMENT" \
+#             "$CONTAINER"="${IMAGE}:${TAG}"
+
+#           kubectl -n "$NAMESPACE" annotate deploy/"$DEPLOYMENT" \
+#             ci.commit="${GITHUB_SHA}" ci.tag="${TAG}" --overwrite
+
+#           kubectl -n "$NAMESPACE" rollout status deploy/"$DEPLOYMENT" --timeout=300s
+
+#           echo -n "Resulting image: "
+#           kubectl -n "$NAMESPACE" get deploy "$DEPLOYMENT" \
+#             -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 
