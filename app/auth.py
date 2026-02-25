@@ -106,7 +106,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     user = User(
         email=payload.email,
         password_hash=hash_password(payload.password),
-        role="admin",
+        role="pending_user",
         tenant_id=tenant.id,
     )
     db.add(user)
@@ -149,37 +149,51 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
     if not tenant:
         return None
 
-    if tenant.status != "active" and (user.role or "user") != "platform_admin":
-        msg = "Forbidden"
-        if tenant.status == "pending":
-            msg = "Account pending approval"
-        elif tenant.status == "suspended":
-            msg = "Account suspended"
-        elif tenant.status == "rejected":
-            msg = "Account rejected"
-        raise HTTPException(status_code=403, detail=msg)
+    role = (user.role or "user")
 
-    if user.role == "platform_admin":
-        ns = "default"
-    else:
+    # ✅ 1) امنع pending_user من الدخول نهائيًا
+    # (حتى لو بالغلط tenant صار active)
+    if role == "pending_user":
+        raise HTTPException(status_code=403, detail="Account pending approval")
+
+    # ✅ 2) platform_admin يتجاوز حالة tenant (لو تحب) — لكن انتبه للـ namespace
+    # إذا الأدمن فقط لإدارة النظام: خليه default
+    # لكن إذا تريد الأدمن يشوف أيضًا tenants أخرى، هذا موضوع ثاني (RBAC + اختيار ns)
+    if role != "platform_admin":
+        # ✅ غير الأدمن: لازم tenant يكون active
+        if tenant.status != "active":
+            msg = "Forbidden"
+            if tenant.status == "pending":
+                msg = "Account pending approval"
+            elif tenant.status == "suspended":
+                msg = "Account suspended"
+            elif tenant.status == "rejected":
+                msg = "Account rejected"
+            raise HTTPException(status_code=403, detail=msg)
+
+        # ✅ غير الأدمن: ns لازم يكون tenant.k8s_namespace
         ns = tenant.k8s_namespace
         if not ns:
             raise HTTPException(
-                400,
-                "Tenant does not have a Kubernetes namespace assigned",
+                status_code=403,
+                detail="Tenant does not have a Kubernetes namespace assigned",
             )
+
+    else:
+        # ✅ الأدمن
+        ns = "default"
 
     token = create_access_token(
         sub=user.email,
         tid=tenant.id,
         ns=ns,
-        role=user.role or "user",
+        role=role,
     )
 
     return LoginResponse(
         access_token=token,
-        expires_in=JWT_EXP_HOURS * 3600,
-        user=LoginUser(id=user.id, email=user.email, role=user.role or "user"),
+        expires_in=int(JWT_EXP_HOURS * 3600),
+        user=LoginUser(id=user.id, email=user.email, role=role),
         tenant=LoginTenant(id=tenant.id, name=tenant.name, k8s_namespace=ns),
     )
 
