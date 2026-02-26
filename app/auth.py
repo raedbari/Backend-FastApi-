@@ -211,6 +211,41 @@ class CurrentContext(BaseModel):
     k8s_namespace: str | None = None
 
 
+# def get_current_context(
+#     cred: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+#     db: Session = Depends(get_db),
+# ) -> CurrentContext:
+#     token = cred.credentials
+#     try:
+#         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+
+#         email = payload.get("sub")
+#         tid = payload.get("tid")
+#         ns = payload.get("ns")
+#         role = payload.get("role") or "user"
+
+#         if not email or tid is None:
+#             raise ValueError("bad claims")
+
+#         # 👈 تحميل user_id من قاعدة البيانات
+#         user = db.query(User).filter(User.email == email).first()
+#         if not user:
+#             raise ValueError("user not found")
+
+#         return CurrentContext(
+#             user_id=user.id,
+#             email=email,
+#             role=role,
+#             tenant_id=int(tid),
+#             k8s_namespace=(None if ns is None else str(ns)),
+#         )
+
+#     except (JWTError, ValueError):
+#         raise HTTPException(
+#             status_code=401,
+#             detail="Invalid or expired token",
+#         )
+
 def get_current_context(
     cred: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: Session = Depends(get_db),
@@ -221,27 +256,49 @@ def get_current_context(
 
         email = payload.get("sub")
         tid = payload.get("tid")
-        ns = payload.get("ns")
-        role = payload.get("role") or "user"
 
         if not email or tid is None:
             raise ValueError("bad claims")
 
-        # 👈 تحميل user_id من قاعدة البيانات
+        # ✅ 1) جيب user من DB
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise ValueError("user not found")
 
+        # ✅ 2) جيب tenant من DB (لا تثق بالـ tid في التوكن لو تحب، بس غالباً يكفي)
+        tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
+        if not tenant:
+            raise ValueError("tenant not found")
+
+        # ✅ 3) خذ role من DB (لا تثق بـ role في التوكن)
+        role = user.role or "user"
+
+        # ✅ 4) منع أي مستخدم غير platform_admin إذا tenant ليس active
+        if tenant.status != "active" and role != "platform_admin":
+            msg = "Forbidden"
+            if tenant.status == "pending":
+                msg = "Account pending approval"
+            elif tenant.status == "rejected":
+                msg = "Account rejected"
+            elif tenant.status == "suspended":
+                msg = "Account suspended"
+            raise HTTPException(status_code=403, detail=msg)
+
+        # ✅ 5) namespace: admin = default، غيره = tenant.k8s_namespace
+        if role == "platform_admin":
+            k8s_ns = "default"
+        else:
+            k8s_ns = tenant.k8s_namespace
+            if not k8s_ns:
+                raise HTTPException(status_code=403, detail="No namespace assigned")
+
         return CurrentContext(
             user_id=user.id,
-            email=email,
+            email=user.email,
             role=role,
-            tenant_id=int(tid),
-            k8s_namespace=(None if ns is None else str(ns)),
+            tenant_id=tenant.id,
+            k8s_namespace=k8s_ns,
         )
 
-    except (JWTError, ValueError):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token",
-        )
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")

@@ -171,18 +171,22 @@ def contact_us(payload: ContactPayload):
 def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None) -> str:
     # platform_admin يقدر يختار ns بشرط ضمن ALLOWED_NAMESPACES
     if ctx.role == "platform_admin":
-        ns = requested_ns or (ctx.ns or "default")
-        if ns not in ctx.allowed_namespaces:
-            raise HTTPException(403, "Forbidden namespace")
+        ns = requested_ns or (ctx.k8s_namespace or "default")
+        if hasattr(ctx, "allowed_namespaces") and ctx.allowed_namespaces:
+            if ns not in ctx.allowed_namespaces:
+                raise HTTPException(403, "Forbidden namespace")
         return ns
 
     # غير الأدمن: لازم يكون عنده ns محدد ومسموح
-    if not ctx.ns:
+    ns = ctx.k8s_namespace
+    if not ns:
         raise HTTPException(403, "No namespace assigned")
-    if ctx.ns not in ctx.allowed_namespaces:
-        raise HTTPException(403, "Forbidden namespace")
-    return ctx.ns
 
+    if hasattr(ctx, "allowed_namespaces") and ctx.allowed_namespaces:
+        if ns not in ctx.allowed_namespaces:
+            raise HTTPException(403, "Forbidden namespace")
+
+    return ns
 # -------------------------------------------------------------------
 # Deploy App (WITH LOGS)
 # -------------------------------------------------------------------
@@ -278,26 +282,17 @@ async def scale_app(
 @api.get("/apps/status", response_model=StatusResponse)
 async def apps_status(
     name: str | None = None,
-    ns: str | None = None,  # ✅ اقرأ ns من query
+    ns: str | None = None,  # ✅ admin فقط
     ctx: CurrentContext = Depends(get_current_context),
 ):
-    try:
-        # ✅ غير الأدمن: تجاهل ns القادم من اليوزر
-        if ctx.role != "platform_admin":
-            effective_ns = verify_namespace_access(ctx)  # غالبًا ترجع ctx.ns
-        else:
-            # ✅ الأدمن: مسموح يحدد ns (لكن تحقّق أنه ضمن allowed)
-            if ns:
-                effective_ns = verify_namespace_access(ctx, requested_ns=ns)
-            else:
-                effective_ns = verify_namespace_access(ctx)
+    # ✅ platform_admin يقدر يحدد ns بالـ query
+    if ctx.role == "platform_admin":
+        effective_ns = ns or "default"
+    else:
+        # ✅ غير admin ممنوع يختار ns
+        effective_ns = ctx.k8s_namespace
 
-        return list_status(name=name, namespace=effective_ns)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    return list_status(name=name, namespace=effective_ns)
 # -------------------------------------------------------------------
 # Blue/Green Prepare (WITH LOGS)
 # -------------------------------------------------------------------
