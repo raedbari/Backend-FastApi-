@@ -155,19 +155,33 @@ def contact_us(payload: ContactPayload):
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
+# def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None) -> str:
+#     user_ns = getattr(ctx, "k8s_namespace", None)
+#     user_role = (ctx.role or "").lower()
+
+#     is_admin = user_role in ("admin", "platform_admin")
+
+#     if not is_admin:
+#         if requested_ns and requested_ns != user_ns:
+#             raise HTTPException(status_code=403, detail="Namespace not allowed")
+#         return user_ns or requested_ns
+
+#     return requested_ns or user_ns
+
 def verify_namespace_access(ctx: CurrentContext, requested_ns: str | None = None) -> str:
-    user_ns = getattr(ctx, "k8s_namespace", None)
-    user_role = (ctx.role or "").lower()
+    # platform_admin يقدر يختار ns بشرط ضمن ALLOWED_NAMESPACES
+    if ctx.role == "platform_admin":
+        ns = requested_ns or (ctx.ns or "default")
+        if ns not in ctx.allowed_namespaces:
+            raise HTTPException(403, "Forbidden namespace")
+        return ns
 
-    is_admin = user_role in ("admin", "platform_admin")
-
-    if not is_admin:
-        if requested_ns and requested_ns != user_ns:
-            raise HTTPException(status_code=403, detail="Namespace not allowed")
-        return user_ns or requested_ns
-
-    return requested_ns or user_ns
-
+    # غير الأدمن: لازم يكون عنده ns محدد ومسموح
+    if not ctx.ns:
+        raise HTTPException(403, "No namespace assigned")
+    if ctx.ns not in ctx.allowed_namespaces:
+        raise HTTPException(403, "Forbidden namespace")
+    return ctx.ns
 
 # -------------------------------------------------------------------
 # Deploy App (WITH LOGS)
@@ -247,15 +261,43 @@ async def scale_app(
 # -------------------------------------------------------------------
 # Status (NO Logs)
 # -------------------------------------------------------------------
+# @api.get("/apps/status", response_model=StatusResponse)
+# async def apps_status(name: str | None = None, ctx: CurrentContext = Depends(get_current_context)):
+#     try:
+#         ns = verify_namespace_access(ctx)
+#         return list_status(name=name, namespace=ns)
+#     except Exception as e:
+#         raise HTTPException(500, str(e))
+
+# @router.get("/apps/status")
+# def apps_status(ns: str | None = None, ctx: CurrentContext = Depends(get_current_context)):
+#     # لو platform_admin فقط يسمح له يختار ns
+#     if ctx.role != "platform_admin":
+#         ns = ctx.ns  # تجاهل query
+#     # (اختياري) حتى admin خليّه مقيد بـ ALLOWED_NAMESPACES إذا تريد
 @api.get("/apps/status", response_model=StatusResponse)
-async def apps_status(name: str | None = None, ctx: CurrentContext = Depends(get_current_context)):
+async def apps_status(
+    name: str | None = None,
+    ns: str | None = None,  # ✅ اقرأ ns من query
+    ctx: CurrentContext = Depends(get_current_context),
+):
     try:
-        ns = verify_namespace_access(ctx)
-        return list_status(name=name, namespace=ns)
+        # ✅ غير الأدمن: تجاهل ns القادم من اليوزر
+        if ctx.role != "platform_admin":
+            effective_ns = verify_namespace_access(ctx)  # غالبًا ترجع ctx.ns
+        else:
+            # ✅ الأدمن: مسموح يحدد ns (لكن تحقّق أنه ضمن allowed)
+            if ns:
+                effective_ns = verify_namespace_access(ctx, requested_ns=ns)
+            else:
+                effective_ns = verify_namespace_access(ctx)
+
+        return list_status(name=name, namespace=effective_ns)
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
-
-
 # -------------------------------------------------------------------
 # Blue/Green Prepare (WITH LOGS)
 # -------------------------------------------------------------------
