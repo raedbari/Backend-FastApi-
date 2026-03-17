@@ -1,5 +1,5 @@
 # app/main.py
-from fastapi import FastAPI, Query, HTTPException, APIRouter, Depends, status, Request ,path
+from fastapi import FastAPI, Query, HTTPException, APIRouter, Depends, status, Request 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
