@@ -21,7 +21,7 @@ from app.logs.logger import log_event
 
 
 # ----------------------------
-# نماذج
+# models
 # ----------------------------
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -55,9 +55,7 @@ class SignupResponse(BaseModel):
     status: str = "pending"
 
 
-# ----------------------------
-# دوال مساعدة
-# ----------------------------
+
 def verify_password(plain: str, hashed: str) -> bool:
     try:
         return pbkdf2_sha256.verify(plain, hashed)
@@ -87,7 +85,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 # ----------------------------
-# Self-Signup
+# Signup
 # ----------------------------
 @router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)):
@@ -123,7 +121,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db), request: Request
 
     resp = login_user(db, payload.email, payload.password)
     if not resp:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Invalid credentials")
 
     # Log successful login
     log_event(
@@ -151,16 +149,12 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
 
     role = (user.role or "user")
 
-    # ✅ 1) امنع pending_user من الدخول نهائيًا
-    # (حتى لو بالغلط tenant صار active)
     if role == "pending_user":
         raise HTTPException(status_code=403, detail="Account pending approval")
 
-    # ✅ 2) platform_admin يتجاوز حالة tenant (لو تحب) — لكن انتبه للـ namespace
-    # إذا الأدمن فقط لإدارة النظام: خليه default
-    # لكن إذا تريد الأدمن يشوف أيضًا tenants أخرى، هذا موضوع ثاني (RBAC + اختيار ns)
+
     if role != "platform_admin":
-        # ✅ غير الأدمن: لازم tenant يكون active
+
         if tenant.status != "active":
             msg = "Forbidden"
             if tenant.status == "pending":
@@ -171,7 +165,7 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
                 msg = "Account rejected"
             raise HTTPException(status_code=403, detail=msg)
 
-        # ✅ غير الأدمن: ns لازم يكون tenant.k8s_namespace
+
         ns = tenant.k8s_namespace
         if not ns:
             raise HTTPException(
@@ -180,7 +174,7 @@ def login_user(db: Session, email: str, password: str) -> Optional[LoginResponse
             )
 
     else:
-        # ✅ الأدمن
+
         ns = "default"
 
     token = create_access_token(
@@ -211,40 +205,7 @@ class CurrentContext(BaseModel):
     k8s_namespace: str | None = None
 
 
-# def get_current_context(
-#     cred: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-#     db: Session = Depends(get_db),
-# ) -> CurrentContext:
-#     token = cred.credentials
-#     try:
-#         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
 
-#         email = payload.get("sub")
-#         tid = payload.get("tid")
-#         ns = payload.get("ns")
-#         role = payload.get("role") or "user"
-
-#         if not email or tid is None:
-#             raise ValueError("bad claims")
-
-#         # 👈 تحميل user_id من قاعدة البيانات
-#         user = db.query(User).filter(User.email == email).first()
-#         if not user:
-#             raise ValueError("user not found")
-
-#         return CurrentContext(
-#             user_id=user.id,
-#             email=email,
-#             role=role,
-#             tenant_id=int(tid),
-#             k8s_namespace=(None if ns is None else str(ns)),
-#         )
-
-#     except (JWTError, ValueError):
-#         raise HTTPException(
-#             status_code=401,
-#             detail="Invalid or expired token",
-#         )
 
 def get_current_context(
     cred: HTTPAuthorizationCredentials = Depends(bearer_scheme),
@@ -260,20 +221,19 @@ def get_current_context(
         if not email or tid is None:
             raise ValueError("bad claims")
 
-        # ✅ 1) جيب user من DB
+
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise ValueError("user not found")
 
-        # ✅ 2) جيب tenant من DB (لا تثق بالـ tid في التوكن لو تحب، بس غالباً يكفي)
         tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
         if not tenant:
             raise ValueError("tenant not found")
 
-        # ✅ 3) خذ role من DB (لا تثق بـ role في التوكن)
+
         role = user.role or "user"
 
-        # ✅ 4) منع أي مستخدم غير platform_admin إذا tenant ليس active
+
         if tenant.status != "active" and role != "platform_admin":
             msg = "Forbidden"
             if tenant.status == "pending":
@@ -284,7 +244,7 @@ def get_current_context(
                 msg = "Account suspended"
             raise HTTPException(status_code=403, detail=msg)
 
-        # ✅ 5) namespace: admin = default، غيره = tenant.k8s_namespace
+
         if role == "platform_admin":
             k8s_ns = "default"
         else:

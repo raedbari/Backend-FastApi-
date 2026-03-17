@@ -17,7 +17,6 @@ Base = declarative_base()
 
 
 def get_db():
-    """Dependency: to obtain a DB session inside the endpoints"""
     db = SessionLocal()
     try:
         yield db
@@ -26,10 +25,6 @@ def get_db():
 
 
 def init_db():
-    """
-    Create tables + seed a demo tenant with an admin user.
-    Called once during startup.
-    """
     from .models import Tenant, User, BillingEvent  # noqa
 
     # Create tables if they don’t exist

@@ -1,5 +1,5 @@
 # app/main.py
-from fastapi import FastAPI, Query, HTTPException, APIRouter, Depends, status, Request
+from fastapi import FastAPI, Query, HTTPException, APIRouter, Depends, status, Request ,path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
@@ -77,10 +77,10 @@ class ContactPayload(BaseModel):
 app.include_router(auth_router, prefix="/api")
 app.include_router(onboarding_router, prefix="/api")
 app.include_router(onboarding_admin_router, prefix="/api")
-app.include_router(logs_router)            # already has /api/logs
+app.include_router(logs_router)           
 app.include_router(monitor_router, prefix="/api")
 app.include_router(alerts_router, prefix="/api")
-
+app.include_router(alerts_router)
 
 # -------------------------------------------------------------------
 # CORS
@@ -195,7 +195,7 @@ async def deploy_app(
     spec: AppSpec,
     ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db),
-    request: Request = None
+    request: Request = None 
 ):
     try:
         user_role = (ctx.role or "").lower()
@@ -265,27 +265,13 @@ async def scale_app(
 # -------------------------------------------------------------------
 # Status (NO Logs)
 # -------------------------------------------------------------------
-# @api.get("/apps/status", response_model=StatusResponse)
-# async def apps_status(name: str | None = None, ctx: CurrentContext = Depends(get_current_context)):
-#     try:
-#         ns = verify_namespace_access(ctx)
-#         return list_status(name=name, namespace=ns)
-#     except Exception as e:
-#         raise HTTPException(500, str(e))
 
-# @router.get("/apps/status")
-# def apps_status(ns: str | None = None, ctx: CurrentContext = Depends(get_current_context)):
-#     # لو platform_admin فقط يسمح له يختار ns
-#     if ctx.role != "platform_admin":
-#         ns = ctx.ns  # تجاهل query
-#     # (اختياري) حتى admin خليّه مقيد بـ ALLOWED_NAMESPACES إذا تريد
 @api.get("/apps/status", response_model=StatusResponse)
 async def apps_status(
     name: str | None = None,
     ns: str | None = None,  # ✅ admin فقط
     ctx: CurrentContext = Depends(get_current_context),
 ):
-    # ✅ platform_admin يقدر يحدد ns بالـ query
     if ctx.role == "platform_admin":
         effective_ns = ns or "default"
     else:

@@ -8,7 +8,7 @@ passlib>=1.7.4
 python-multipart>=0.0.9
 
 SQLAlchemy>=2.0
-alembic  # اختياري للهجرات
+alembic  
 PyJWT>=2.9.0
 
 # إذا كنت تستخدم PostgreSQL:
