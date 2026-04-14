@@ -26,14 +26,14 @@ from .k8s_client import get_api_clients, get_namespace, platform_labels
 from .models import AppSpec, StatusItem, StatusResponse
 
 # ============================================================
-# 🧩  Create or Update the Deployment
+# 🧩  Create  the Deployment
 # ============================================================
 
 def upsert_deployment(spec: AppSpec) -> dict:
     ns = spec.namespace or get_namespace()
     apis = get_api_clients()
     apps = apis["apps"]
-    v1   = apis["core"]  # ✅ CoreV1Api
+    v1   = apis["core"]  
 
     name   = spec.effective_app_label
     port   = spec.effective_port
@@ -65,8 +65,8 @@ def upsert_deployment(spec: AppSpec) -> dict:
         sc.run_as_user = getattr(spec, "run_as_user", None) or 1001
 
     default_resources = {
-        "requests": {"cpu": "20m", "memory": "64Mi"},
-        "limits":   {"cpu": "200m", "memory": "256Mi"},
+        "requests": {"cpu": "80m", "memory": "64Mi"},
+        "limits":   {"cpu": "600m", "memory": "256Mi"},
     }
     res = spec.resources or default_resources
     resources = client.V1ResourceRequirements(
@@ -354,10 +354,8 @@ def upsert_preview_deployment(spec: "AppSpec") -> dict:
     return resp.to_dict()
 
 
-# def bg_prepare_full(spec: AppSpec, ctx=None) -> dict:
-#     preview_dep = upsert_preview_deployment(spec)
-#     preview_svc = upsert_service_preview(spec, ctx)
-#     return {"preview_deployment": preview_dep, "preview_service": preview_svc}
+
+
 
 def bg_prepare_full(spec: AppSpec, ctx=None) -> dict:
     preview_dep = upsert_preview_deployment(spec)
@@ -545,7 +543,7 @@ def list_status(name: Optional[str] = None, namespace: Optional[str] = None) -> 
     else:
         deployments = apps.list_namespaced_deployment(
             namespace=ns,
-            label_selector="app.kubernetes.io/managed-by=cloud-devops-platform",
+            label_selector="app.kubernetes.io/managed-by=smartdevops-platform",
         ).items
 
     items: List[StatusItem] = []
@@ -698,7 +696,7 @@ def bg_prepare(spec: AppSpec):
     labels = {
         "app": app_label,
         "role": "preview",
-        "app.kubernetes.io/managed-by": "cloud-devops-platform"
+        "app.kubernetes.io/managed-by": "smartdevops-platform"
     }
 
     container = client.V1Container(
@@ -740,24 +738,24 @@ def bg_promote(name: str, namespace: str):
     apps = apis["apps"]
     core = apis["core"]
 
-    # تأكد أن preview موجود وجاهز
+
     preview_dep = f"{name}-preview"
     apps.read_namespaced_deployment(preview_dep, ns)
 
-    # بدّل الترافيك إلى preview
+
     core.patch_namespaced_service(
         name=name,
         namespace=ns,
         body={"spec": {"selector": {"app": name, "role": "preview"}}},
     )
 
-    # (اختياري) تأكد preview شغّال
+
     try:
         apps.patch_namespaced_deployment_scale(preview_dep, ns, {"spec": {"replicas": 1}})
     except ApiException:
         pass
 
-    # (اختياري) خلّي active موجود لكن idle (0 replicas) — أو اتركه شغال حسب رغبتك
+
     try:
         apps.patch_namespaced_deployment_scale(name, ns, {"spec": {"replicas": 0}})
     except ApiException:
@@ -772,23 +770,22 @@ def bg_rollback(name: str, namespace: str):
     apps = apis["apps"]
     core = apis["core"]
 
-    # تأكد أن الـ active deployment موجود
     apps.read_namespaced_deployment(name, ns)
 
-    # رجّع الترافيك إلى active
+
     core.patch_namespaced_service(
         name=name,
         namespace=ns,
         body={"spec": {"selector": {"app": name, "role": "active"}}},
     )
 
-    # (اختياري) شغّل active
+
     try:
         apps.patch_namespaced_deployment_scale(name, ns, {"spec": {"replicas": 1}})
     except ApiException:
         pass
 
-    # (اختياري) طفّي preview (يبقى موجود)
+
     try:
         apps.patch_namespaced_deployment_scale(f"{name}-preview", ns, {"spec": {"replicas": 0}})
     except ApiException:

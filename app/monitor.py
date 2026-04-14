@@ -22,7 +22,7 @@ _prom = httpx.AsyncClient(base_url=PROM_URL, timeout=10)
 _loki = httpx.AsyncClient(base_url=LOKI_URL, timeout=30)
 
 def promq(expr: str, rng: str = "5m"):
-    # range query window used by /query_range endpoints
+
     now = int(time.time())
     start = now - 60*5 if rng.endswith("m") else now - 900
     step = "15s"

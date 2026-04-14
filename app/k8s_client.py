@@ -61,13 +61,10 @@ def get_namespace() -> str:
 
 
 def platform_labels(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    """
-    Standard labels to mark resources as managed by this platform.
-    You can pass extra labels to merge.
-    """
+ 
     base = {
-        "managed-by": "cloud-devops-platform",
-        "app.kubernetes.io/managed-by": "cloud-devops-platform",
+        "managed-by": "smartdevops-platform",
+        "app.kubernetes.io/managed-by": "smartdevops-platform",
     }
     if extra:
         base.update(extra)

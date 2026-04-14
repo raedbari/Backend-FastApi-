@@ -37,8 +37,7 @@ def build_dashboard_url(
     )
     return f"{GRAFANA_URL}/d/{uid}/{DEFAULT_DASH_SLUG}?{qs}"
 
-# ------- (اختياري) دوال Provisioning عبر API -------
-# تستخدم التوكن لو أردت عمل Dashboard/Folder أو تحديثهما تلقائياً.
+
 
 def grafana_get(path: str) -> httpx.Response:
     if not GRAFANA_TOKEN:

@@ -206,13 +206,13 @@ def _provision_tenant(tenant_id: int):
 # ---------- public endpoints ----------
 @router.post("/register")
 def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depends(get_db)):
-    # 🔹 1. تنظيف الـ namespace (هنا سيتم رفض default/ingress-nginx/cert-manager... عبر sanitize_namespace)
+
     try:
         clean_ns = sanitize_namespace(payload.namespace)
     except HTTPException as e:
         raise e
 
-    # 🔹 2. حذف أي tenant مرفوض بنفس الاسم أو namespace
+
     rejected_tenants = db.execute(
         select(Tenant).where(
             or_(
@@ -231,7 +231,7 @@ def register(payload: RegisterPayload, bg: BackgroundTasks, db: Session = Depend
     if rejected_tenants:
         db.commit()
 
-    # 🔹 3. التحقق من وجود Tenant بنفس الاسم أو namespace (غير مرفوض)
+
     existing_tenant = db.execute(
         select(Tenant).where(
             or_(
@@ -355,7 +355,7 @@ def list_pending(
     ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db)
 ):
-    _ensure_admin(ctx)  # ✅ رجّع هذا السطر
+    _ensure_admin(ctx)  
 
     rows = db.execute(select(Tenant).where(Tenant.status == "pending")).scalars().all()
     out: List[PendingTenant] = []
@@ -363,7 +363,7 @@ def list_pending(
     for t in rows:
         u = db.execute(select(User).where(User.tenant_id == t.id)).scalar_one_or_none()
         if not u:
-            continue  # تخطي أي tenant ليس لديه مستخدم
+            continue 
 
         out.append(PendingTenant(
             id=t.id,
@@ -374,10 +374,6 @@ def list_pending(
 
     return out
 
-
-
-# class ApprovePayload(BaseModel):
-#     pass
 
 class ApprovePayload(BaseModel):
     role: str
@@ -529,37 +525,6 @@ class RejectPayload(BaseModel):
     reason: Optional[str] = None
 
 
-# @admin_router.post("/{tenant_id}/reject")
-# def reject(
-#     tenant_id: int,
-#     body: RejectPayload,
-#     ctx: CurrentContext = Depends(get_current_context),
-#     db: Session = Depends(get_db),
-# ):
-#     _ensure_admin(ctx)
-#     t = db.get(Tenant, tenant_id)
-#     if not t:
-#         raise HTTPException(404, detail="Tenant not found")
-
-#     t.status = "rejected"
-#     db.add(t)
-#     db.commit()
-#     _audit(db, t.id, "reject", actor=ctx.email, result=body.reason or "rejected")
-
-#     # حذف الـnamespace إن وُجد
-#     try:
-#         config.load_incluster_config()
-#     except:
-#         config.load_kube_config()
-
-#     k8s = client.CoreV1Api()
-#     try:
-#         k8s.delete_namespace(name=t.k8s_namespace)
-#     except client.exceptions.ApiException as e:
-#         if e.status != 404:
-#             raise
-
-#     return {"ok": True, "msg": f"Tenant '{t.name}' rejected and namespace '{t.k8s_namespace}' removed"}
 
 
 
@@ -583,7 +548,7 @@ def reject(
     t.status = "rejected"
     db.add(t)
 
-    # 2) (اختياري لكن مهم) اجعل كل users لهذا tenant ممنوعين
+
     db.query(User).filter(User.tenant_id == tenant_id).update(
         {"role": "rejected_user"}, synchronize_session=False
     )
@@ -592,9 +557,8 @@ def reject(
 
     _audit(db, t.id, "reject", actor=ctx.email, result=body.reason or "rejected")
 
-    # 3) (اختياري) لا تحذف namespace في soft reject
-    # إذا تريد تتركه: لا تعمل delete_namespace
-    # إذا تريد تنظف موارد Kubernetes: اعمل delete_namespace هنا
+ 
+ 
 
     return {"ok": True, "msg": f"Tenant '{t.name}' rejected"}
 # to let the pending page know that the tenant have been approved 
@@ -603,7 +567,7 @@ def get_my_tenant_status(
     ctx: CurrentContext = Depends(get_current_context),
     db: Session = Depends(get_db)
 ):
-    # نحاول الحصول على التينانت من الـcontext
+
     u = db.execute(select(User).where(User.email == ctx.email)).scalar_one_or_none()
     if not u:
         raise HTTPException(404, "User not found")
