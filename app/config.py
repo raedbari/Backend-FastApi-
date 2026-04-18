@@ -26,3 +26,4 @@ GRAFANA_ORG_ID = int(os.getenv("GRAFANA_ORG_ID", "1"))
 
 # Frontend CORS (available as FRONTEND_ORIGIN in .env)
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://smartdevops.lat")
+

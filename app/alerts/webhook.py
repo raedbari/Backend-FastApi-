@@ -19,20 +19,23 @@ logger = logging.getLogger("smartdevops.alerts")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
-# SMTP settings from environment variables
+# اقرأ فقط من SMTP_* و ADMIN_EMAIL حتى لا يحصل تضارب مع config.py
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
+SMTP_FROM = os.getenv("SMTP_FROM", f"Smart DevOps Alerts <{SMTP_USER}>").strip()
+FALLBACK_EMAIL = os.getenv("ADMIN_EMAIL", SMTP_USER).strip()
 
-SMTP_HOST = os.getenv("ALERTS_SMTP_HOST") or os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("ALERTS_SMTP_PORT") or os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("ALERTS_SMTP_USER") or os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("ALERTS_SMTP_PASS") or os.getenv("SMTP_PASS", "")
-SMTP_FROM = os.getenv("ALERTS_FROM") or os.getenv("SMTP_FROM", f"Smart DevOps Alerts <{SMTP_USER}>")
-FALLBACK_EMAIL = os.getenv("ALERTS_FALLBACK_EMAIL") or os.getenv("ADMIN_EMAIL", SMTP_USER)
 
 def send_email_smtp(to_email: str, subject: str, html_body: str) -> None:
     """Send an email using SMTP."""
     to_email = (to_email or "").strip()
     if not to_email:
         raise ValueError("Recipient email is empty")
+
+    if not SMTP_USER or not SMTP_PASS:
+        raise RuntimeError("SMTP credentials are missing from environment")
 
     logger.info(
         "[alerts] connecting SMTP host=%s port=%s user=%s to=%s",
@@ -59,11 +62,11 @@ def send_email_smtp(to_email: str, subject: str, html_body: str) -> None:
 
 def resolve_recipient(db: Session, namespace: str) -> str:
     """
-    Determine recipient email from namespace:
-      - Find tenant with tenants.k8s_namespace == namespace
-      - Pick one user from that tenant by role priority:
-        client > devops > tenant_admin > platform_admin
-      - Fallback to FALLBACK_EMAIL if nothing matches
+    Resolve recipient by namespace:
+    1) Find tenant where tenants.k8s_namespace == namespace
+    2) Pick one user by role priority:
+       client > devops > tenant_admin > platform_admin
+    3) Fallback to ADMIN_EMAIL/SMTP_USER if not found
     """
     namespace = (namespace or "").strip()
     if not namespace:
@@ -127,8 +130,8 @@ async def alertmanager_webhook(
     request: Request, db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
-    Receives Alertmanager JSON payload and emails tenant recipients.
-    Returns debug-friendly information while still being 200 OK for Alertmanager.
+    Receive Alertmanager webhook payload and send emails to tenant users.
+    Keeps HTTP 200 for Alertmanager but returns debug-friendly details.
     """
     try:
         payload: Dict[str, Any] = await request.json()
@@ -237,6 +240,7 @@ async def alertmanager_webhook(
 
 @router.post("/test")
 def test_send(to: Optional[str] = None) -> Dict[str, Any]:
+    """Manual test endpoint for SMTP only."""
     to_email = (to or FALLBACK_EMAIL).strip()
 
     logger.info("[alerts] running test email to=%s", to_email)
