@@ -20,13 +20,13 @@ if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
 # SMTP settings from environment variables
-SMTP_HOST = os.getenv("ALERTS_SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("ALERTS_SMTP_PORT", "587"))
-SMTP_USER = os.getenv("ALERTS_SMTP_USER", "raedbari203@gmail.com")
-SMTP_PASS = os.getenv("ALERTS_SMTP_PASS", "plds tltg vvzu kgwr")
-SMTP_FROM = os.getenv("ALERTS_FROM", f"Smart DevOps Alerts <{SMTP_USER}>")
-FALLBACK_EMAIL = os.getenv("ALERTS_FALLBACK_EMAIL", "raedbari203@gmail.com")
 
+SMTP_HOST = os.getenv("ALERTS_SMTP_HOST") or os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("ALERTS_SMTP_PORT") or os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("ALERTS_SMTP_USER") or os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("ALERTS_SMTP_PASS") or os.getenv("SMTP_PASS", "")
+SMTP_FROM = os.getenv("ALERTS_FROM") or os.getenv("SMTP_FROM", f"Smart DevOps Alerts <{SMTP_USER}>")
+FALLBACK_EMAIL = os.getenv("ALERTS_FALLBACK_EMAIL") or os.getenv("ADMIN_EMAIL", SMTP_USER)
 
 def send_email_smtp(to_email: str, subject: str, html_body: str) -> None:
     """Send an email using SMTP."""
