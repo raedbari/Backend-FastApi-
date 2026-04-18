@@ -59,6 +59,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
     # ----------------------------
     # Security context + resources
     # ----------------------------
+
     sc = client.V1SecurityContext(allow_privilege_escalation=False)
     if not getattr(spec, "compat_mode", False) and getattr(spec, "run_as_non_root", True):
         sc.run_as_non_root = True
@@ -77,6 +78,7 @@ def upsert_deployment(spec: AppSpec) -> dict:
     # ----------------------------
     # PVC mount
     # ----------------------------
+    
     mount_path = getattr(spec, "pvc_mount_path", None) or "/data"
 
     volume_mounts = [
